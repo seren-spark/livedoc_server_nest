@@ -1,0 +1,25 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: livedoc_nest
+      MYSQL_USER: livedoc
+      MYSQL_PASSWORD: livedoc_dev_password
+      MYSQL_ROOT_PASSWORD: livedoc_root_dev_password
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-plivedoc_root_dev_password"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.4
+    ports:
+      - "6335:6333"
+      - "6336:6334"
+    volumes:
+      - ./data/qdrant:/qdrant/storage

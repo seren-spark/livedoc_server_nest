@@ -1,0 +1,17 @@
+{
+  "run_id": "20260809T010346876Z",
+  "marker": "LIVEDOC-E2E-C2A544A150B9",
+  "config_fingerprint": "c953f4ae42b63251",
+  "collection": "article_chunks_real_v1",
+  "started_at": "2026-08-09T01:03:46.885Z",
+  "health": {
+    "status": "ready",
+    "missing": [],
+    "runtime_mode": "real",
+    "env_file": "E:\\LiveDoc\\livedoc_server_nest\\.env"
+  },
+  "import_id": "7adb12225b164a6799d138509250588a",
+  "status": "failed",
+  "error": "Docling import ended as retry_wait: Docling parser failed: Command failed: D:\\software\\Python313\\python.exe E:\\LiveDoc\\livedoc_server_nest\\scripts\\docling_parse.py --input E:\\LiveDoc\\livedoc_server_nest\\data\\storage\\spaces\\space_a\\imports\\7adb12225b164a6799d138509250588a\\source\\livedoc-real-e2e-20260809T010346876Z.docx --filename livedoc-real-e2e-20260809T010346876Z.docx --output E:\\LiveDoc\\livedoc_server_nest\\data\\tmp\\docling-4d9d0ecb-013b-403b-9f9b-ec0659fb4842.json\nOpenBLAS error: Memory allocation still failed after 10 retries, giving up.\n",
+  "completed_at": "2026-08-09T01:04:15.174Z"
+}

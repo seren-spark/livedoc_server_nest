@@ -1,0 +1,38 @@
+{
+  "run_id": "20260809T005929779Z",
+  "marker": "LIVEDOC-E2E-8B1488EC1BCD",
+  "config_fingerprint": "af97ee78b835c5ce",
+  "collection": "article_chunks_real_v1",
+  "started_at": "2026-08-09T00:59:29.784Z",
+  "health": {
+    "status": "ready",
+    "missing": [],
+    "runtime_mode": "real",
+    "env_file": "E:\\LiveDoc\\livedoc_server_nest\\.env"
+  },
+  "import_id": "430767377999488688dd772b169eb2f0",
+  "parser_version": "docling/2.118.0",
+  "document_id": "import_430767377999488688dd772b169eb2f0",
+  "index_job_id": "bd815b9f513046a687e7a96964ef055c",
+  "index_job_before_claim": {
+    "job_id": "bd815b9f513046a687e7a96964ef055c",
+    "status": "queued",
+    "next_run_at": "2026-08-09T00:59:40.000Z",
+    "lease_expires_at": null,
+    "database_now": "2026-08-09T00:59:40.005Z",
+    "is_due": "1"
+  },
+  "search_trace_id": "556158beab624de4880dc4a205c3b439",
+  "search_citation": {
+    "citation_id": "import_430767377999488688dd772b169eb2f0:1:import_430767377999488688dd772b169eb2f0_0_30fd867635",
+    "doc_id": "import_430767377999488688dd772b169eb2f0",
+    "chunk_id": "import_430767377999488688dd772b169eb2f0_0_30fd867635",
+    "document_version": 1,
+    "source_anchor": "chunk-import_430767377999488688dd772b169eb2f0_0_30fd867635",
+    "start_offset": 0,
+    "end_offset": 81
+  },
+  "status": "failed",
+  "error": "expected 200 \"OK\", got 503 \"Service Unavailable\"",
+  "completed_at": "2026-08-09T00:59:46.826Z"
+}

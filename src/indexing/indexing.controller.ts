@@ -38,7 +38,7 @@ export class IndexingController {
         context,
       );
     } else {
-      this.documents.assertAccess(record, context);
+      await this.documents.getWritable(record.doc_id, context);
       const previousVisibility = record.visibility;
       const previousTeam = record.team_id;
       record = await this.documents.update(

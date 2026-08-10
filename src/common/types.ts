@@ -42,14 +42,18 @@ export interface KnowledgeScope {
 }
 
 export interface Citation {
+  citation_id: string;
   index: number;
   doc_id: string;
   chunk_id: string;
   title: string;
   content: string;
+  snippet: string;
+  source_anchor: string;
   source_type: SourceType;
   visibility: Visibility;
   score: number;
+  retrieval_score: number;
   dense_score?: number | null;
   keyword_score?: number | null;
   rerank_score?: number | null;
@@ -59,9 +63,22 @@ export interface Citation {
   space_id: string;
   team_id?: string | null;
   document_version: number;
+  document_updated_at?: string | null;
   start_offset?: number | null;
   end_offset?: number | null;
+  asset_id?: string | null;
+  page_number?: number | null;
 }
+
+export type ImportStatus =
+  | 'uploaded'
+  | 'queued'
+  | 'parsing'
+  | 'review_ready'
+  | 'confirmed'
+  | 'retry_wait'
+  | 'failed'
+  | 'canceled';
 
 export interface RetrievalTrace {
   trace_id: string;
@@ -85,13 +102,10 @@ export interface RetrievalTrace {
 
 export interface AgentToolCall {
   name:
-    | 'knowledge_search'
-    | 'summarize_document'
+    | 'search_knowledge_base'
+    | 'summarize_current_document'
     | 'continue_paragraph'
-    | 'format_selection'
-    | 'fill_in_middle'
-    | 'correct_text'
-    | 'expand_text';
+    | 'optimize_format';
   arguments: Record<string, unknown>;
   reason: string;
   source: 'llm_function_call' | 'rule_fallback' | 'request_intent';

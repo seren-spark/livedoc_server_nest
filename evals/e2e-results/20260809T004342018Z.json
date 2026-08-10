@@ -1,0 +1,18 @@
+{
+  "run_id": "20260809T004342018Z",
+  "marker": "LIVEDOC-E2E-B60ACA00E6CE",
+  "config_fingerprint": "af97ee78b835c5ce",
+  "collection": "article_chunks_real_v1",
+  "started_at": "2026-08-09T00:43:42.031Z",
+  "health": {
+    "status": "ready",
+    "missing": [],
+    "runtime_mode": "real",
+    "env_file": "E:\\LiveDoc\\livedoc_server_nest\\.env"
+  },
+  "import_id": "2c8c696d69294c0bb94b51cf9b6d54b7",
+  "parser_version": "docling/2.118.0",
+  "status": "failed",
+  "error": "expected 202 \"Accepted\", got 500 \"Internal Server Error\"",
+  "completed_at": "2026-08-09T00:43:59.180Z"
+}

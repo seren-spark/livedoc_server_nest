@@ -23,6 +23,22 @@ async function getEmbeddingPipeline() {
   return embeddingPipeline;
 }
 
+async function countEmbeddingTokens(texts: string[]): Promise<number[]> {
+  const model = await getEmbeddingPipeline();
+  const tokenizer = model.tokenizer;
+  if (!tokenizer) throw new Error('Embedding pipeline did not expose its tokenizer');
+  const counts: number[] = [];
+  for (const text of texts) {
+    const encoded = await tokenizer(text, {
+      padding: false,
+      truncation: false,
+    });
+    const ids = encoded.input_ids.tolist() as number[] | number[][];
+    counts.push(Array.isArray(ids[0]) ? (ids[0] as number[]).length : ids.length);
+  }
+  return counts;
+}
+
 async function getReranker() {
   if (!rerankModel || !rerankTokenizer) {
     const { AutoModelForSequenceClassification, AutoTokenizer, env } = await import(
@@ -43,10 +59,19 @@ parentPort?.on('message', async (message: { id: number; type: string; payload: a
   try {
     if (message.type === 'embed') {
       const model = await getEmbeddingPipeline();
-      const output = await model(message.payload.texts, { pooling: 'cls', normalize: true });
+      const output = await model(message.payload.texts, {
+        pooling: 'cls',
+        normalize: true,
+        truncation: true,
+      });
       const raw = output.tolist() as number[][] | number[][][];
       const vectors = Array.isArray(raw[0]?.[0]) ? (raw as number[][][]).map((item) => item[0]!) : raw;
       parentPort?.postMessage({ id: message.id, result: vectors });
+      return;
+    }
+    if (message.type === 'count_embedding_tokens') {
+      const counts = await countEmbeddingTokens(message.payload.texts);
+      parentPort?.postMessage({ id: message.id, result: counts });
       return;
     }
     if (message.type === 'rerank') {

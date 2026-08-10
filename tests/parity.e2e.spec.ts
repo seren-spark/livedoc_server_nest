@@ -1,9 +1,13 @@
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import { jest } from '@jest/globals';
 import supertest from 'supertest';
 import { bootstrap } from '../src/main.js';
 import { NO_EVIDENCE_MESSAGE } from '../src/ai/ai-writer.service.js';
 import { RetrievalService } from '../src/retrieval/retrieval.service.js';
 import { VectorStoreService } from '../src/retrieval/vector-store.service.js';
+import { DoclingParserService } from '../src/document-imports/docling-parser.service.js';
+import { ImportWorkerService } from '../src/document-imports/import-worker.service.js';
+import { IndexJobsService } from '../src/indexing/index-jobs.service.js';
 
 describe('Python 34-test parity - Supertest API contracts', () => {
   let app: NestFastifyApplication;
@@ -53,6 +57,63 @@ describe('Python 34-test parity - Supertest API contracts', () => {
     expect(job.body.status).toBe('queued');
   });
 
+  test('PDF import is reviewed in the existing editor before one idempotent index job', async () => {
+    const parser = app.get(DoclingParserService);
+    jest.spyOn(parser, 'parse').mockResolvedValueOnce({
+      title: '解析标题',
+      markdown: '# 解析标题\n\n正文\n\n![图片](asset://pending/1)',
+      parser_version: 'fake-docling/1',
+      images: [{
+        filename: 'figure.png', mime_type: 'image/png', data_base64: Buffer.from('image-bytes').toString('base64'),
+        ordinal: 1, page_number: 2, width: 640, height: 480,
+        ocr_text: '图中文字', ocr_error: null,
+      }],
+    });
+    const uploaded = await api.post('/document-imports').set(auth(aliceToken))
+      .attach('file', Buffer.from('%PDF-1.4\nfake'), { filename: 'handbook.pdf', contentType: 'application/pdf' })
+      .field('visibility', 'public').field('tags', '["产品"]')
+      .expect(202);
+    expect(uploaded.body.status).toBe('queued');
+    await api.get(`/document-imports/${uploaded.body.import_id}`).set(auth(bobToken)).expect(403);
+
+    const worker = app.get(ImportWorkerService);
+    await worker.runOnce('e2e-import-worker');
+    const reviewed = await api.get(`/document-imports/${uploaded.body.import_id}`).set(auth(aliceToken)).expect(200);
+    expect(reviewed.body).toMatchObject({ status: 'review_ready', parser_version: 'fake-docling/1' });
+    const image = reviewed.body.assets.find((asset: { kind: string }) => asset.kind === 'image');
+    expect(image).toMatchObject({ ocr_text: '图中文字', page_number: 2 });
+    expect(image.storage_key).toBeUndefined();
+
+    await api.patch(`/document-imports/${uploaded.body.import_id}`).set(auth(aliceToken)).send({
+      title: '审核标题', content: `# 审核标题\n\n正文\n\n![图](asset://${image.asset_id})`,
+      editor_content: { type: 'doc', content: [] }, asset_ids: [image.asset_id],
+    }).expect(200);
+    const confirmed = await api.post(`/document-imports/${uploaded.body.import_id}/confirm`).set(auth(aliceToken)).expect(202);
+    expect(confirmed.body.document.content).not.toContain('图中文字');
+    const jobs = app.get(IndexJobsService);
+    const queued = await jobs.get(confirmed.body.index_job.job_id);
+    expect(queued?.request_payload.content).toContain('图中文字');
+    await api.get(image.content_url).set(auth(bobToken)).expect(200);
+    await api.patch(`/documents/${confirmed.body.document.doc_id}`).set(auth(bobToken))
+      .send({ title: '越权修改' }).expect(403);
+    const repeated = await api.post(`/document-imports/${uploaded.body.import_id}/confirm`).set(auth(aliceToken)).expect(202);
+    expect(repeated.body.document.doc_id).toBe(confirmed.body.document.doc_id);
+    expect(repeated.body.index_job.job_id).toBe(confirmed.body.index_job.job_id);
+    await api.delete(`/documents/${confirmed.body.document.doc_id}`).set(auth(aliceToken)).expect(200);
+    await api.get(image.content_url).set(auth(aliceToken)).expect(404);
+  });
+
+  test('document import rejects extension-only PDF uploads', async () => {
+    await api
+      .post('/document-imports')
+      .set(auth(aliceToken))
+      .attach('file', Buffer.from('not-a-pdf'), {
+        filename: 'spoofed.pdf',
+        contentType: 'application/pdf',
+      })
+      .expect(400);
+  });
+
   test('frontend cannot supply query_variants', async () => {
     await api.post('/knowledge/search').set(auth(aliceToken)).send({ query: 'RAG', query_variants: ['bypass'] }).expect(422);
     await api.post('/ai/write').set(auth(aliceToken)).send({
@@ -90,15 +151,32 @@ describe('Python 34-test parity - Supertest API contracts', () => {
     expect(metrics.body.helpful_count).toBeGreaterThanOrEqual(1);
   });
 
-  test('stream emits tool_call, tool_result and meta before answer events', async () => {
+  test('stream emits meta and visible tool execution before answer events', async () => {
     const response = await api.post('/ai/write').set(auth(carolToken)).send({
       intent: 'knowledge_qa', query: '仅用于验证无证据事件顺序', retrieval_domain: 'private', stream: true,
       current_context: { title: '空文档' },
     }).expect(200).expect('content-type', /text\/event-stream/u);
     const events = [...response.text.matchAll(/^event: (.+)$/gmu)].map((match) => match[1]);
-    expect(events.slice(0, 3)).toEqual(['tool_call', 'tool_result', 'meta']);
+    expect(events.slice(0, 3)).toEqual(['meta', 'tool_start', 'tool_result']);
+    expect(events.indexOf('citations')).toBeGreaterThan(events.indexOf('delta'));
+    expect(events.indexOf('citations')).toBeLessThan(events.indexOf('done'));
     expect(events.at(-1)).toBe('done');
     expect(events.indexOf('delta')).toBeGreaterThan(events.indexOf('meta'));
+  });
+
+  test('hijacked SSE response preserves CORS headers for an allowed IPv6 local origin', async () => {
+    const origin = 'http://[::1]:5173';
+    const response = await api.post('/ai/write')
+      .set(auth(carolToken))
+      .set('Origin', origin)
+      .send({
+        intent: 'knowledge_qa', query: '验证 SSE CORS', retrieval_domain: 'private', stream: true,
+        current_context: { title: '空文档' },
+      })
+      .expect(200)
+      .expect('content-type', /text\/event-stream/u);
+    expect(response.headers['access-control-allow-origin']).toBe(origin);
+    expect(response.headers['access-control-allow-credentials']).toBe('true');
   });
 
   test('editor tasks use ephemeral context without vector persistence', async () => {
@@ -119,6 +197,8 @@ describe('Python 34-test parity - Supertest API contracts', () => {
       current_context: { title: 'x' },
     }).expect(200);
     expect(knowledge.body.answer).toBe(NO_EVIDENCE_MESSAGE);
+    expect(knowledge.body.has_evidence).toBe(false);
+    expect(knowledge.body.can_insert).toBe(false);
     const editor = await api.post('/ai/write').set(auth(carolToken)).send({
       intent: 'summarize_document', query: '总结', stream: false,
       current_context: { title: 'x' }, current_document: { title: 'x', content: '有内容' },

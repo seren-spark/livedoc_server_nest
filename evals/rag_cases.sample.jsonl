@@ -1,0 +1,6 @@
+{"case_id":"public-permission-first","query":"企业 RAG 为什么要先做权限过滤？","scope":{"private":false,"team":false,"public":true},"relevant_doc_ids":["public_rag_basics"],"forbidden_doc_ids":["alice_private_writing","team_alpha_rag_spec"]}
+{"case_id":"public-citation-link","query":"回答怎样关联到原始资料？","scope":{"private":false,"team":false,"public":true},"relevant_doc_ids":["public_rag_basics"],"forbidden_doc_ids":["alice_private_writing"]}
+{"case_id":"private-writing-method","query":"Alice 的私有写作方法是什么？","scope":{"private":true,"team":false,"public":false},"relevant_doc_ids":["alice_private_writing"],"forbidden_doc_ids":["bob_private_canvas","carol_private_research"]}
+{"case_id":"team-alpha-payload","query":"Alpha 团队要求向量载荷包含哪些权限字段？","scope":{"private":false,"team":true,"public":false},"relevant_doc_ids":["team_alpha_rag_spec"],"forbidden_doc_ids":["team_beta_release_notes"]}
+{"case_id":"team-alpha-service-filter","query":"服务端应该在哪个阶段做团队权限过滤？","scope":{"private":false,"team":true,"public":false},"relevant_doc_ids":["team_alpha_rag_spec"],"forbidden_doc_ids":["team_beta_release_notes"]}
+{"case_id":"no-evidence-private-canvas","query":"Bob 如何使用 OffscreenCanvas？","scope":{"private":true,"team":false,"public":false},"relevant_doc_ids":[],"forbidden_doc_ids":["bob_private_canvas"]}

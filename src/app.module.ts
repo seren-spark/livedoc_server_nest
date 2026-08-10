@@ -10,17 +10,21 @@ import { IndexingModule } from './indexing/indexing.module.js';
 import { ObservabilityController } from './observability/observability.controller.js';
 import { ObservabilityModule } from './observability/observability.module.js';
 import { RetrievalModule } from './retrieval/retrieval.module.js';
+import { StorageModule } from './storage/storage.module.js';
+import { DocumentImportsModule } from './document-imports/document-imports.module.js';
 
 @Module({
   imports: [
     CoreConfigModule,
     DatabaseModule,
+    StorageModule,
     LlmModule,
     ObservabilityModule,
     AuthModule,
     RetrievalModule,
     IndexingModule,
     DocumentsModule,
+    DocumentImportsModule,
     AiModule,
   ],
   controllers: [HealthController, ObservabilityController],

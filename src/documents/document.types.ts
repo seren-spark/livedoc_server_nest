@@ -11,6 +11,9 @@ export interface DocumentRecord {
   team_id: string | null;
   owner_id: string | null;
   url: string | null;
+  editor_content: Record<string, unknown> | null;
+  source_import_id: string | null;
+  assets?: unknown[];
   document_version: number;
   index_status: IndexStatus;
   active_index_version: number | null;
@@ -34,6 +37,7 @@ export interface DocumentIndexRequest {
   owner_id: string | null;
   url: string | null;
   document_version: number;
+  document_updated_at: string;
 }
 
 export function toIndexRequest(record: DocumentRecord): DocumentIndexRequest {
@@ -49,5 +53,6 @@ export function toIndexRequest(record: DocumentRecord): DocumentIndexRequest {
     owner_id: record.owner_id,
     url: record.url,
     document_version: record.document_version,
+    document_updated_at: record.updated_at.toISOString(),
   };
 }

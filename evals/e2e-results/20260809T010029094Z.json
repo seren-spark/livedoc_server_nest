@@ -1,0 +1,43 @@
+{
+  "run_id": "20260809T010029094Z",
+  "marker": "LIVEDOC-E2E-8A757A24E81C",
+  "config_fingerprint": "af97ee78b835c5ce",
+  "collection": "article_chunks_real_v1",
+  "started_at": "2026-08-09T01:00:29.100Z",
+  "health": {
+    "status": "ready",
+    "missing": [],
+    "runtime_mode": "real",
+    "env_file": "E:\\LiveDoc\\livedoc_server_nest\\.env"
+  },
+  "import_id": "6349a0c6a2284fdcb6bf4b4e8a913dda",
+  "parser_version": "docling/2.118.0",
+  "document_id": "import_6349a0c6a2284fdcb6bf4b4e8a913dda",
+  "index_job_id": "3a5885ae355d4d308bfd58aad4f0a5f6",
+  "index_job_before_claim": {
+    "job_id": "3a5885ae355d4d308bfd58aad4f0a5f6",
+    "status": "queued",
+    "next_run_at": "2026-08-09T01:00:43.000Z",
+    "lease_expires_at": null,
+    "database_now": "2026-08-09T01:00:42.855Z",
+    "is_due": "0"
+  },
+  "search_trace_id": "392265c0e586405e975673b498dc1074",
+  "search_citation": {
+    "citation_id": "import_6349a0c6a2284fdcb6bf4b4e8a913dda:1:import_6349a0c6a2284fdcb6bf4b4e8a913dda_0_468ddb6d55",
+    "doc_id": "import_6349a0c6a2284fdcb6bf4b4e8a913dda",
+    "chunk_id": "import_6349a0c6a2284fdcb6bf4b4e8a913dda_0_468ddb6d55",
+    "document_version": 1,
+    "source_anchor": "chunk-import_6349a0c6a2284fdcb6bf4b4e8a913dda_0_468ddb6d55",
+    "start_offset": 0,
+    "end_offset": 81
+  },
+  "completion_error": {
+    "message": "LLM tool selection failed: Error",
+    "error": "Service Unavailable",
+    "statusCode": 503
+  },
+  "status": "failed",
+  "error": "AI completion returned HTTP 503: {\"message\":\"LLM tool selection failed: Error\",\"error\":\"Service Unavailable\",\"statusCode\":503}",
+  "completed_at": "2026-08-09T01:00:50.797Z"
+}

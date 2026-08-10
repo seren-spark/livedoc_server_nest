@@ -1,12 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { jest } from '@jest/globals';
 import { ServiceUnavailableException } from '@nestjs/common';
 import { AgentToolsService, normalizeQueryVariants } from '../src/ai/agent-tools.service.js';
+import { selectGroundedCitations } from '../src/ai/ai-writer.service.js';
 import { ConversationMemoryService } from '../src/ai/memory.service.js';
 import { DocumentCreateDto, DocumentUpdateDto, type AiWriteDto } from '../src/common/dto.js';
-import type { AccessContext } from '../src/common/types.js';
+import type { AccessContext, Citation } from '../src/common/types.js';
 import { AppConfig } from '../src/config/app-config.js';
 import type { DatabaseService } from '../src/database/database.service.js';
+import { DEMO_DOCUMENTS, isDemoDocumentVisibleTo } from '../src/documents/demo-data.js';
 import { DocumentsService } from '../src/documents/documents.service.js';
 import type { DocumentIndexRequest } from '../src/documents/document.types.js';
 import { adoptionRate, calculateRetrievalMetrics, gradeGroundedAnswer } from '../src/evaluation/metrics.js';
@@ -39,10 +42,25 @@ function indexRequest(docId = 'doc-1', version = 1): DocumentIndexRequest {
     owner_id: 'user_alice',
     url: null,
     document_version: version,
+    document_updated_at: '2026-08-10T00:00:00.000Z',
   };
 }
 
 describe('Python 34-test parity - unit and structural checks', () => {
+  test('demo seeding is scoped to the current account and its teams', () => {
+    const visibleToAlice = DEMO_DOCUMENTS
+      .filter((document) => isDemoDocumentVisibleTo(document, alice))
+      .map((document) => document.doc_id);
+
+    expect(visibleToAlice).toEqual([
+      'public_livedoc_workflow_demo',
+      'alice_private_writing',
+      'team_alpha_rag_spec',
+    ]);
+    expect(visibleToAlice).not.toContain('bob_private_canvas');
+    expect(visibleToAlice).not.toContain('team_beta_release_notes');
+  });
+
   test('metrics cover recall, rank, precision and permission leakage', () => {
     expect(calculateRetrievalMetrics([{
       expected_chunk_ids: ['a', 'b'],
@@ -57,6 +75,30 @@ describe('Python 34-test parity - unit and structural checks', () => {
     expect(gradeGroundedAnswer('知识库未查询到相关依据，无法作答', 0).grounded).toBe(true);
   });
 
+  test('answer citations contain only sources actually referenced by the model', () => {
+    const citations = [1, 2, 3].map((index) => ({
+      index,
+      citation_id: `doc-1:1:chunk-${index}`,
+      doc_id: 'doc-1',
+      chunk_id: `chunk-${index}`,
+      title: `source-${index}`,
+      content: `evidence-${index}`,
+      snippet: `evidence-${index}`,
+      source_anchor: `chunk-${index}`,
+      source_type: 'article',
+      visibility: 'private',
+      score: 1,
+      retrieval_score: 1,
+      heading_path: [],
+      space_id: 'space_a',
+      document_version: 1,
+    })) as Citation[];
+
+    expect(selectGroundedCitations('第二条证据 [2]，再次引用 [2]，然后引用第一条 [1]。', citations)
+      .map((citation) => citation.index)).toEqual([2, 1]);
+    expect(() => selectGroundedCitations('无效引用 [4]', citations)).toThrow('unknown citations');
+  });
+
   test('adoption uses completed evidence answers as denominator', () => {
     expect(adoptionRate(4, 3)).toBe(0.75);
     expect(adoptionRate(0, 3)).toBe(0);
@@ -65,14 +107,18 @@ describe('Python 34-test parity - unit and structural checks', () => {
   test('LLM function call is normalized to a known typed tool', async () => {
     const llm = {
       isConfigured: true,
-      selectTool: async () => ({ name: 'knowledge_search', arguments: { query: 'RAG', confidence: 0.9 }, reason: 'search' }),
+      selectTool: async () => ({
+        name: 'search_knowledge_base',
+        arguments: { query: 'RAG', retrieval_domain: 'public', confidence: 0.9, reason: 'search' },
+        reason: 'search',
+      }),
     };
     const service = new AgentToolsService(config({ agentToolSelection: 'llm' }), llm as never);
     const request = {
       query: 'RAG', retrieval_domain: 'public',
       current_context: { title: 'x', cursor_before: '', cursor_after: '', selected_text: '', tags: [] },
     } as unknown as AiWriteDto;
-    await expect(service.select(request)).resolves.toMatchObject({ name: 'knowledge_search', source: 'llm_function_call' });
+    await expect(service.select(request)).resolves.toMatchObject({ name: 'search_knowledge_base', source: 'llm_function_call' });
   });
 
   test('fixed corpus and case counts remain 18 and 60', () => {
@@ -157,6 +203,19 @@ describe('Python 34-test parity - unit and structural checks', () => {
     expect(hits[0]?.pointId).toBe('b');
   });
 
+  test('sparse document vectors merge hash collisions into unique sorted indices', () => {
+    const sparse = new SparseEmbeddingService();
+    jest
+      .spyOn(sparse as unknown as { tokenId(token: string): number }, 'tokenId')
+      .mockReturnValue(7);
+
+    const vector = sparse.embedDocument('qdrant retrieval');
+
+    expect(vector.indices).toEqual([7]);
+    expect(vector.values).toEqual([2]);
+    expect(new Set(vector.indices).size).toBe(vector.indices.length);
+  });
+
   test('keyword tokenization uses Jieba while hash embedding keeps Python character tokens', () => {
     expect(tokenizeKeyword('中文知识库，Qdrant!')).toEqual(
       expect.arrayContaining(['中文', '知识', '知识库', 'qdrant']),
@@ -210,7 +269,7 @@ describe('Python 34-test parity - unit and structural checks', () => {
 
   test('production validation rejects all smoke fallbacks', () => {
     const production = config({ appEnv: 'production' });
-    expect(() => production.validateRuntime()).toThrow('Production configuration cannot use smoke fallbacks');
+    expect(() => production.validateRuntime()).toThrow('Real RAG configuration is incomplete');
   });
 
   test('LLM-only tool selection never silently falls back to rules', async () => {

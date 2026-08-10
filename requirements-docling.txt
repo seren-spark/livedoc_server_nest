@@ -1,0 +1,2 @@
+docling==2.118.0
+rapidocr-onnxruntime==1.2.3

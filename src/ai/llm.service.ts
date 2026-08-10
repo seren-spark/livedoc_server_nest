@@ -25,6 +25,8 @@ export class LlmService {
 
   async *stream(prompt: string, signal?: AbortSignal): AsyncGenerator<string> {
     this.ensureConfigured();
+    const timeout = AbortSignal.timeout(this.config.llmTimeoutSeconds * 1000);
+    const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const response = await fetch(`${this.config.llmBaseUrl}/chat/completions`, {
       method: 'POST',
       headers: this.headers,
@@ -34,9 +36,12 @@ export class LlmService {
         temperature: 0.2,
         stream: true,
       }),
-      signal,
+      signal: combined,
     });
-    if (!response.ok || !response.body) throw new Error(`LLM request failed: ${response.status}`);
+    if (!response.ok || !response.body) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`LLM request failed: ${response.status}${detail ? ` ${detail.slice(0, 300)}` : ''}`);
+    }
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -49,7 +54,13 @@ export class LlmService {
         if (!line.startsWith('data: ')) continue;
         const raw = line.slice(6).trim();
         if (!raw || raw === '[DONE]') continue;
-        const delta = JSON.parse(raw).choices?.[0]?.delta?.content;
+        let parsed: any;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          throw new Error('LLM stream returned malformed JSON');
+        }
+        const delta = parsed.choices?.[0]?.delta?.content;
         if (delta) yield String(delta);
       }
       if (done) break;
@@ -58,6 +69,7 @@ export class LlmService {
 
   async selectTool(request: AiWriteDto, tools: unknown[]): Promise<{ name: string; arguments: Record<string, any>; reason: string }> {
     const data = await this.request({
+      ...this.config.llmToolCallExtraBody,
       model: this.config.llmModel,
       messages: [
         {
@@ -101,6 +113,7 @@ export class LlmService {
       },
     };
     const data = await this.request({
+      ...this.config.llmToolCallExtraBody,
       model: this.config.llmModel,
       messages: [
         {
@@ -130,7 +143,10 @@ export class LlmService {
       body: JSON.stringify(body),
       signal: combined,
     });
-    if (!response.ok) throw new Error(`LLM request failed: ${response.status}`);
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`LLM request failed: ${response.status}${detail ? ` ${detail.slice(0, 300)}` : ''}`);
+    }
     return response.json();
   }
 

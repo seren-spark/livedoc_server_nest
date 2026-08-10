@@ -1,0 +1,20 @@
+{
+  "run_id": "20260809T005701872Z",
+  "marker": "LIVEDOC-E2E-83B14BD5D1E6",
+  "config_fingerprint": "af97ee78b835c5ce",
+  "collection": "article_chunks_real_v1",
+  "started_at": "2026-08-09T00:57:01.877Z",
+  "health": {
+    "status": "ready",
+    "missing": [],
+    "runtime_mode": "real",
+    "env_file": "E:\\LiveDoc\\livedoc_server_nest\\.env"
+  },
+  "import_id": "a3720df744b048b8bcafe970025b4aa4",
+  "parser_version": "docling/2.118.0",
+  "document_id": "import_a3720df744b048b8bcafe970025b4aa4",
+  "index_job_id": "7d799caa1db64302b15b6741f5363d5e",
+  "status": "failed",
+  "error": "Index job did not succeed: none / none / ",
+  "completed_at": "2026-08-09T00:57:12.979Z"
+}

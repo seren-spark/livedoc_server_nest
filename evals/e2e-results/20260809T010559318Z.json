@@ -1,0 +1,73 @@
+{
+  "run_id": "20260809T010559318Z",
+  "marker": "LIVEDOC-E2E-F387376F232E",
+  "config_fingerprint": "55142454b89a74c3",
+  "collection": "article_chunks_real_v1",
+  "started_at": "2026-08-09T01:05:59.324Z",
+  "health": {
+    "status": "ready",
+    "missing": [],
+    "runtime_mode": "real",
+    "env_file": "E:\\LiveDoc\\livedoc_server_nest\\.env"
+  },
+  "import_id": "f26649876e6042da9e7520350aabed87",
+  "parser_version": "docling/2.118.0",
+  "document_id": "import_f26649876e6042da9e7520350aabed87",
+  "index_job_id": "ecf51180736242628e70c9e516700d31",
+  "index_job_before_claim": {
+    "job_id": "ecf51180736242628e70c9e516700d31",
+    "status": "queued",
+    "next_run_at": "2026-08-09T01:06:13.000Z",
+    "lease_expires_at": null,
+    "database_now": "2026-08-09T01:06:12.817Z",
+    "is_due": "0"
+  },
+  "search_trace_id": "d488bb9506b1486c90f0c94806b7f9a4",
+  "search_citation": {
+    "citation_id": "import_f26649876e6042da9e7520350aabed87:1:import_f26649876e6042da9e7520350aabed87_0_3bd53b2e2a",
+    "doc_id": "import_f26649876e6042da9e7520350aabed87",
+    "chunk_id": "import_f26649876e6042da9e7520350aabed87_0_3bd53b2e2a",
+    "document_version": 1,
+    "source_anchor": "chunk-import_f26649876e6042da9e7520350aabed87_0_3bd53b2e2a",
+    "start_offset": 0,
+    "end_offset": 81
+  },
+  "completion_trace_id": "8215f00af0974c82ba23f92323dc9620",
+  "tool_call": {
+    "name": "search_knowledge_base",
+    "arguments": {
+      "query": "请检索知识库并根据来源回答：验收标识 LIVEDOC-E2E-F387376F232E 对应的回答关键词是什么？",
+      "query_variants": [
+        "请检索知识库并根据来源回答：验收标识 LIVEDOC-E2E-F387376F232E 对应的回答关键词是什么？",
+        "验收标识 LIVEDOC-E2E-F387376F232E 对应的回答关键词是什么",
+        "LIVEDOC-E2E-F387376F232E 回答关键词",
+        "验收标识 LIVEDOC-E2E-F387376F232E 关键词"
+      ],
+      "retrieval_domain": "public",
+      "selected_text_length": 0
+    },
+    "reason": "用户明确要求检索知识库，查询特定验收标识 LIVEDOC-E2E-F387376F232E 对应的回答关键词，需使用 search_knowledge_base 工具进行精确检索。",
+    "source": "llm_function_call",
+    "confidence": 0.95,
+    "selection_ms": 2357.71
+  },
+  "answer": "验收标识 LIVEDOC-E2E-F387376F232E 对应的回答关键词是：蓝绿色 [1]",
+  "sse_events": [
+    "meta",
+    "tool_start",
+    "tool_result",
+    "delta",
+    "delta",
+    "delta",
+    "delta",
+    "delta",
+    "delta",
+    "delta",
+    "delta",
+    "delta",
+    "citations",
+    "done"
+  ],
+  "status": "passed",
+  "completed_at": "2026-08-09T01:06:39.242Z"
+}

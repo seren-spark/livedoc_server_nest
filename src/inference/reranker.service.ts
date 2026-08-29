@@ -12,6 +12,13 @@ export class RerankerService {
     private readonly worker: InferenceWorkerService,
   ) {}
 
+  /**
+   * 精排
+   * @param query 查询文本
+   * @param hits 候选文档列表
+   * @param topN 精排候选数量
+   * @returns 排序后的结果
+   */
   async rerank(query: string, hits: SearchHit[], topN: number): Promise<SearchHit[]> {
     // 第1步：如果配置为 none，直接返回原结果，不做重排
     if (this.config.rerankProvider === 'none') return hits;

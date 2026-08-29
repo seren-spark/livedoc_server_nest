@@ -40,6 +40,13 @@ export interface DocumentIndexRequest {
   document_updated_at: string;
 }
 
+
+/**
+ * 将 DocumentRecord 转换为 DocumentIndexRequest
+ * 供 Worker 异步执行分块、向量化时使用。
+ * @param record - DocumentRecord
+ * @returns DocumentIndexRequest
+ */
 export function toIndexRequest(record: DocumentRecord): DocumentIndexRequest {
   return {
     doc_id: record.doc_id,

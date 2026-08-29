@@ -4,6 +4,7 @@ import { AppConfig } from "../config/app-config.js";
 import type { AccessContext, IndexJobStatus } from "../common/types.js";
 import { DatabaseService } from "../database/database.service.js";
 import type { DocumentIndexRequest } from "../documents/document.types.js";
+import { PersistentJobStore } from "../jobs/persistent-job-store.js";
 import type { IndexJobRecord } from "./index-job.types.js";
 
 const ACTIVE: IndexJobStatus[] = ["queued", "running", "retry_wait"];
@@ -11,11 +12,22 @@ const ACTIVE: IndexJobStatus[] = ["queued", "running", "retry_wait"];
 @Injectable()
 export class IndexJobsService {
   private readonly jobs = new Map<string, IndexJobRecord>();
+  private readonly store: PersistentJobStore<IndexJobRecord>;
 
   constructor(
     private readonly config: AppConfig,
     private readonly database: DatabaseService,
-  ) {}
+  ) {
+    this.store = new PersistentJobStore({
+      database: this.database,
+      enabled: () => this.database.indexJobsEnabled,
+      tableName: "index_jobs",
+      leaseSeconds: () => this.config.indexJobLeaseSeconds,
+      jobs: this.jobs,
+      mapRow: mapJob,
+      hasDedupeKey: true,
+    });
+  }
 
   async enqueue(
     request: DocumentIndexRequest, // 要索引的文档快照（doc_id + document_version + 正文等）
@@ -131,105 +143,25 @@ export class IndexJobsService {
   }
 
   async get(jobId: string): Promise<IndexJobRecord | null> {
-    if (!this.database.indexJobsEnabled) return this.jobs.get(jobId) ?? null;
-    const rows = await this.database.query<Record<string, unknown>>(
-      "SELECT * FROM index_jobs WHERE job_id = ?",
-      [jobId],
-    );
-    return rows[0] ? mapJob(rows[0]) : null;
+    return this.store.get(jobId);
   }
 
+  /**
+   * 领取下一个任务
+   * @param workerId 工作线程 ID
+   * @returns 被领取的任务记录，或 null 表示没有任务可领取
+   */
   async claimNext(workerId: string): Promise<IndexJobRecord | null> {
-    if (!this.database.indexJobsEnabled) {
-      const now = Date.now();
-      const job = [...this.jobs.values()]
-        .filter(
-          (item) =>
-            ((item.status === "queued" || item.status === "retry_wait") &&
-              (!item.next_run_at || item.next_run_at.getTime() <= now)) ||
-            (item.status === "running" &&
-              Boolean(
-                item.lease_expires_at && item.lease_expires_at.getTime() <= now,
-              )),
-        )
-        .sort((a, b) => a.created_at.getTime() - b.created_at.getTime())[0];
-      if (!job) return null;
-      const claimed = {
-        ...job,
-        status: "running" as const,
-        attempts: job.attempts + 1,
-        worker_id: workerId,
-        started_at: job.started_at ?? new Date(),
-        lease_expires_at: new Date(
-          now + this.config.indexJobLeaseSeconds * 1000,
-        ),
-        updated_at: new Date(),
-      };
-      this.jobs.set(job.job_id, claimed);
-      return claimed;
-    }
-
-    const runner = this.database.source.createQueryRunner();
-    await runner.connect();
-    await runner.startTransaction();
-    try {
-      const rows = (await runner.query(
-        `SELECT * FROM index_jobs
-         WHERE
-           (status IN ('queued','retry_wait') AND (next_run_at IS NULL OR next_run_at <= UTC_TIMESTAMP(6)))
-           OR (status='running' AND lease_expires_at <= UTC_TIMESTAMP(6))
-         ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED`,
-      )) as Record<string, unknown>[];
-      const row = rows[0];
-      if (!row) {
-        await runner.commitTransaction();
-        return null;
-      }
-      const lease = new Date(
-        Date.now() + this.config.indexJobLeaseSeconds * 1000,
-      );
-      await runner.query(
-        `UPDATE index_jobs SET status='running', attempts=attempts+1, worker_id=?,
-         started_at=COALESCE(started_at, UTC_TIMESTAMP(6)), lease_expires_at=?, updated_at=UTC_TIMESTAMP(6)
-         WHERE job_id=?`,
-        [workerId, lease, row.job_id],
-      );
-      await runner.commitTransaction();
-      return this.get(String(row.job_id));
-    } catch (error) {
-      await runner.rollbackTransaction();
-      throw error;
-    } finally {
-      await runner.release();
-    }
+    // PersistentJobStore still claims MySQL jobs in a transaction with FOR UPDATE SKIP LOCKED.
+    return this.store.claimNext(workerId);
   }
 
   async heartbeat(jobId: string, workerId: string, generation: number): Promise<boolean> {
-    const lease = new Date(Date.now() + this.config.indexJobLeaseSeconds * 1000);
-    if (this.database.indexJobsEnabled) {
-      const result = await this.database.source.query(
-        `UPDATE index_jobs SET lease_expires_at=?, updated_at=UTC_TIMESTAMP(6)
-         WHERE job_id=? AND worker_id=? AND generation=? AND status='running'`,
-        [lease, jobId, workerId, generation],
-      );
-      return Number(result?.affectedRows ?? 0) === 1;
-    }
-    const job = this.jobs.get(jobId);
-    if (!job || job.worker_id !== workerId || job.generation !== generation || job.status !== 'running') return false;
-    this.jobs.set(jobId, { ...job, lease_expires_at: lease, updated_at: new Date() });
-    return true;
+    return this.store.heartbeat(jobId, workerId, generation);
   }
 
   async ownsLease(jobId: string, workerId: string, generation: number): Promise<boolean> {
-    const job = await this.get(jobId);
-    return Boolean(
-      job &&
-      job.status === 'running' &&
-      job.worker_id === workerId &&
-      job.generation === generation &&
-      job.lease_expires_at &&
-      job.lease_expires_at.getTime() > Date.now(),
-    );
+    return this.store.ownsLease(jobId, workerId, generation);
   }
 
   async succeed(jobId: string, workerId?: string, generation?: number): Promise<IndexJobRecord> {
@@ -247,49 +179,22 @@ export class IndexJobsService {
       const delays = [30, 120, 600];
       const delay =
         delays[Math.min(job.attempts - 1, delays.length - 1)] ?? 600;
-      return this.retry(jobId, error, new Date(Date.now() + delay * 1000));
+      return this.retry(jobId, error, new Date(Date.now() + delay * 1000), workerId, generation);
     }
     return this.finish(jobId, "failed", error, workerId, generation);
   }
 
   async cancelDocument(docId: string): Promise<void> {
-    if (this.database.indexJobsEnabled) {
-      await this.database.query(
-        `UPDATE index_jobs SET status='canceled', error='Document deleted', worker_id=NULL,
-         lease_expires_at=NULL, dedupe_key=NULL, finished_at=UTC_TIMESTAMP(6), updated_at=UTC_TIMESTAMP(6)
-         WHERE doc_id=? AND status IN ('queued','running','retry_wait')`,
-        [docId],
-      );
-      return;
-    }
-    for (const job of this.jobs.values()) {
-      if (job.doc_id === docId && ACTIVE.includes(job.status)) {
-        const now = new Date();
-        this.jobs.set(job.job_id, {
-          ...job,
-          status: "canceled",
-          error: "Document deleted",
-          worker_id: null,
-          lease_expires_at: null,
-          dedupe_key: null,
-          finished_at: now,
-          updated_at: now,
-        });
-      }
-    }
+    await this.store.cancelWhere({
+      whereSql: "doc_id=?",
+      params: [docId],
+      predicate: (job) => job.doc_id === docId,
+      error: "Document deleted",
+    });
   }
 
   async activeCount(spaceId: string): Promise<number> {
-    if (!this.database.indexJobsEnabled) {
-      return [...this.jobs.values()].filter(
-        (item) => item.space_id === spaceId && ACTIVE.includes(item.status),
-      ).length;
-    }
-    const rows = await this.database.query<{ count: number | string }>(
-      `SELECT COUNT(*) AS count FROM index_jobs WHERE space_id=? AND status IN ('queued','running','retry_wait')`,
-      [spaceId],
-    );
-    return Number(rows[0]?.count ?? 0);
+    return this.store.activeCountBySpace(spaceId);
   }
 
   // 检查文档是否有活跃索引任务（queued/running/retry_wait）
@@ -328,25 +233,16 @@ export class IndexJobsService {
     jobId: string,
     error: string,
     nextRunAt: Date,
+    workerId?: string,
+    generation?: number,
   ): Promise<IndexJobRecord> {
-    const current = await this.require(jobId);
-    const next = {
-      ...current,
-      status: "retry_wait" as const,
-      error: error.slice(0, 2000),
-      worker_id: null,
-      next_run_at: nextRunAt,
-      lease_expires_at: null,
-      updated_at: new Date(),
-    };
-    if (this.database.indexJobsEnabled) {
-      await this.database.query(
-        `UPDATE index_jobs SET status='retry_wait', error=?, worker_id=NULL, next_run_at=?,
-         lease_expires_at=NULL, updated_at=UTC_TIMESTAMP(6) WHERE job_id=?`,
-        [next.error, nextRunAt, jobId],
-      );
-    } else this.jobs.set(jobId, next);
-    return next;
+    const job = await this.store.finish(jobId, "retry_wait", {
+      error,
+      nextRunAt,
+      workerId,
+      generation,
+    });
+    return job ?? this.require(jobId);
   }
 
   private async finish(
@@ -356,34 +252,12 @@ export class IndexJobsService {
     workerId?: string,
     generation?: number,
   ): Promise<IndexJobRecord> {
-    const current = await this.require(jobId);
-    if (workerId && (current.worker_id !== workerId || current.generation !== generation)) return current;
-    const now = new Date();
-    const next: IndexJobRecord = {
-      ...current,
-      status,
-      error: error ? error.slice(0, 2000) : null,
-      worker_id: null,
-      lease_expires_at: null,
-      dedupe_key: null,
-      finished_at: now,
-      updated_at: now,
-    };
-    if (this.database.indexJobsEnabled) {
-      const where = workerId
-        ? 'job_id=? AND worker_id=? AND generation=? AND status=\'running\''
-        : 'job_id=?';
-      const params = workerId
-        ? [status, next.error, now, now, jobId, workerId, generation]
-        : [status, next.error, now, now, jobId];
-      const result = await this.database.source.query(
-        `UPDATE index_jobs SET status=?, error=?, worker_id=NULL, lease_expires_at=NULL,
-         dedupe_key=NULL, finished_at=?, updated_at=? WHERE ${where}`,
-        params,
-      );
-      if (workerId && Number(result?.affectedRows ?? 0) !== 1) return this.require(jobId);
-    } else this.jobs.set(jobId, next);
-    return next;
+    const job = await this.store.finish(jobId, status, {
+      error,
+      workerId,
+      generation,
+    });
+    return job ?? this.require(jobId);
   }
 
   private configFingerprint(): string {

@@ -40,6 +40,21 @@ export const REQUIRED_SCHEMA_COLUMNS = {
     'message_id', 'conversation_id', 'user_id', 'space_id', 'role', 'content',
     'created_at', 'expires_at',
   ],
+  conversation_turns: [
+    'turn_id', 'conversation_id', 'user_id', 'space_id', 'doc_id',
+    'user_content', 'assistant_content', 'created_at', 'expires_at',
+  ],
+  document_memory_profiles: [
+    'doc_id', 'space_id', 'source_document_version', 'memory_version', 'status',
+    'glossary', 'style_tags', 'global_settings', 'suppressed_keys',
+    'source_chunk_hashes', 'last_error', 'created_at', 'updated_at',
+  ],
+  document_memory_jobs: [
+    'job_id', 'doc_id', 'document_version', 'generation', 'status', 'attempts',
+    'max_attempts', 'requested_by', 'space_id', 'force_full', 'dedupe_key',
+    'worker_id', 'lease_expires_at', 'next_run_at', 'error', 'created_at',
+    'started_at', 'finished_at', 'updated_at',
+  ],
   rag_traces: [
     'trace_id', 'user_id', 'space_id', 'entrypoint', 'query_text', 'mode',
     'tool_name', 'status', 'has_evidence', 'retrieval_ms', 'generation_ms',
@@ -57,6 +72,9 @@ export const REQUIRED_SCHEMA_INDEXES = {
   document_imports: ['PRIMARY', 'ix_imports_owner', 'ix_imports_status'],
   document_assets: ['PRIMARY', 'ux_assets_storage_key', 'ix_assets_import', 'ix_assets_document'],
   document_import_jobs: ['PRIMARY', 'ix_import_jobs_claim', 'ix_import_jobs_import'],
+  conversation_turns: ['PRIMARY', 'ix_turns_scope', 'ix_turns_expiry', 'ix_turns_document'],
+  document_memory_profiles: ['PRIMARY', 'ix_memory_profiles_scope'],
+  document_memory_jobs: ['PRIMARY', 'ix_memory_jobs_claim', 'ix_memory_jobs_document', 'ux_memory_jobs_dedupe'],
   rag_traces: ['PRIMARY', 'ix_traces_scope', 'ix_traces_owner'],
   rag_feedback_events: ['PRIMARY', 'ix_feedback_trace', 'ix_feedback_scope'],
 } as const;

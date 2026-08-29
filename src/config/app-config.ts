@@ -108,10 +108,31 @@ export class AppConfig {
   );
   readonly llmModel = process.env.LLM_MODEL ?? '';
   readonly llmTimeoutSeconds = Number(process.env.LLM_TIMEOUT_SECONDS ?? 60);
+  readonly llmContextWindow = Number(process.env.LLM_CONTEXT_WINDOW ?? 32768);
+  readonly summaryMaxOutputTokens = Number(process.env.SUMMARY_MAX_OUTPUT_TOKENS ?? 2048);
+  readonly summarySafetyRatio = Number(process.env.SUMMARY_SAFETY_RATIO ?? 0.15);
+  readonly summaryMapInputTokens = Number(process.env.SUMMARY_MAP_INPUT_TOKENS ?? 6000);
   readonly llmToolCallExtraBody = jsonObjectEnv('LLM_TOOL_CALL_EXTRA_BODY');
   readonly memoryStore = process.env.MEMORY_STORE ?? this.metadataStore;
   readonly memoryMaxMessages = Number(process.env.MEMORY_MAX_MESSAGES ?? 12);
+  readonly memoryMaxTurns = Number(process.env.MEMORY_MAX_TURNS ?? 6);
+  readonly shortMemoryTokenBudget = Number(
+    process.env.SHORT_MEMORY_TOKEN_BUDGET ?? 4000,
+  );
   readonly memoryTtlDays = Number(process.env.MEMORY_TTL_DAYS ?? 30);
+  readonly documentMemoryEnabled = boolEnv('DOCUMENT_MEMORY_ENABLED', true);
+  readonly documentMemoryTokenBudget = Number(
+    process.env.DOCUMENT_MEMORY_TOKEN_BUDGET ?? 500,
+  );
+  readonly documentMemoryMinConfidence = Number(
+    process.env.DOCUMENT_MEMORY_MIN_CONFIDENCE ?? 0.7,
+  );
+  readonly documentMemoryMaxAttempts = Number(
+    process.env.DOCUMENT_MEMORY_MAX_ATTEMPTS ?? 3,
+  );
+  readonly documentMemoryLeaseSeconds = Number(
+    process.env.DOCUMENT_MEMORY_LEASE_SECONDS ?? 300,
+  );
   readonly indexJobStore = process.env.INDEX_JOB_STORE ?? this.metadataStore;
   readonly observabilityStore = process.env.OBSERVABILITY_STORE ?? this.metadataStore;
   readonly indexWorkerPollSeconds = Number(
@@ -139,9 +160,6 @@ export class AppConfig {
   readonly contextTokenBudget = Number(process.env.CONTEXT_TOKEN_BUDGET ?? 1500);
   readonly contextPerCitationTokens = Number(
     process.env.CONTEXT_PER_CITATION_TOKENS ?? 420,
-  );
-  readonly editorDocumentTokenBudget = Number(
-    process.env.EDITOR_DOCUMENT_TOKEN_BUDGET ?? 6000,
   );
   readonly tokenizerEncoding = process.env.TOKENIZER_ENCODING ?? 'cl100k_base';
 

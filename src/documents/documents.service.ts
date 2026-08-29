@@ -148,6 +148,66 @@ export class DocumentsService {
     return { items: visible.slice(offset, offset + pageSize), total };
   }
 
+  async listPublicArticles(
+    page: number,
+    pageSize: number,
+    filters: { q?: string } = {},
+  ): Promise<{ items: DocumentRecord[]; total: number }> {
+    if (this.database.metadataEnabled) {
+      const clauses = [
+        "visibility = 'public'",
+        "source_type IN ('public_article', 'article')",
+      ];
+      const params: unknown[] = [];
+      if (filters.q?.trim()) {
+        clauses.push('(title LIKE ? OR content LIKE ?)');
+        const like = `%${filters.q.trim()}%`;
+        params.push(like, like);
+      }
+      const where = clauses.join(' AND ');
+      const countRows = await this.database.query<{ total: number | string }>(
+        `SELECT COUNT(*) AS total FROM knowledge_documents WHERE ${where}`,
+        params,
+      );
+      const offset = (page - 1) * pageSize;
+      const items = (
+        await this.database.query<Record<string, unknown>>(
+          `SELECT * FROM knowledge_documents WHERE ${where}
+           ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+          [...params, pageSize, offset],
+        )
+      ).map(mapDocumentRow);
+      return { items, total: Number(countRows[0]?.total ?? 0) };
+    }
+
+    let visible = [...this.records.values()].filter(
+      (record) =>
+        record.visibility === 'public' &&
+        ['public_article', 'article'].includes(record.source_type),
+    );
+    const query = filters.q?.trim().toLocaleLowerCase();
+    if (query) {
+      visible = visible.filter((record) =>
+        `${record.title}\n${record.content}`.toLocaleLowerCase().includes(query),
+      );
+    }
+    visible.sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime());
+    const total = visible.length;
+    const offset = (page - 1) * pageSize;
+    return { items: visible.slice(offset, offset + pageSize), total };
+  }
+
+  async getPublicArticle(docId: string): Promise<DocumentRecord> {
+    const record = await this.require(docId);
+    if (
+      record.visibility !== 'public' ||
+      !['public_article', 'article'].includes(record.source_type)
+    ) {
+      throw new NotFoundException('Public article not found.');
+    }
+    return record;
+  }
+
   async get(docId: string): Promise<DocumentRecord | null> {
     if (!this.database.metadataEnabled) return this.records.get(docId) ?? null;
     const rows = await this.database.query<Record<string, unknown>>(
@@ -257,7 +317,11 @@ export class DocumentsService {
     if (this.database.metadataEnabled) await this.database.query('DELETE FROM knowledge_documents WHERE doc_id = ?', [docId]);
     else this.records.delete(docId);
   }
-
+/**
+   * 把文档标记为“已进入索引队列”状态 ，让前端轮询时能看到文档正在排队索引
+   * @param docId 文档 ID
+   * @param jobId 索引任务 ID
+   */
   async markQueued(docId: string, jobId: string): Promise<void> {
     await this.patchState(docId, {
       index_status: 'queued',
@@ -290,6 +354,9 @@ export class DocumentsService {
     if (!canAccessDocument(record, context)) throw new ForbiddenException('Document access denied.');
   }
 
+  /**
+   * 团队写入权限闸门 ：当文档可见性为 team 时，必须指定一个有效的 team_id ，且当前用户必须属于这个团队，否则拒绝创建/更新。
+   */
   assertTeamTarget(visibility: Visibility, teamId: string | null | undefined, context: AccessContext): void {
     if (visibility === 'team' && (!teamId || !context.team_ids.includes(teamId))) {
       throw new ForbiddenException('Cannot write document into another team.');

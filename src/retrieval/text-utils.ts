@@ -1,5 +1,5 @@
-import { Jieba } from '@node-rs/jieba';
-import { dict } from '@node-rs/jieba/dict.js';
+import { Jieba } from "@node-rs/jieba";
+import { dict } from "@node-rs/jieba/dict.js";
 
 const HASH_TOKEN_PATTERN = /[A-Za-z0-9_#+.-]+|[\u4e00-\u9fff]/gu;
 const KEYWORD_TOKEN_PATTERN = /^(?:[A-Za-z0-9_#+.-]+|[\u4e00-\u9fff]+)$/u;
@@ -11,12 +11,18 @@ const jieba = Jieba.withDict(dict) as unknown as {
 export function tokenizeHash(text: string): string[] {
   return text.toLowerCase().match(HASH_TOKEN_PATTERN) ?? [text.slice(0, 64)];
 }
-
+/**
+ * 对文本进行关键词分词
+ * @param text 输入的文本
+ * @returns 关键词数组
+ */
 export function tokenizeKeyword(text: string): string[] {
+  // ① 结巴分词
   const raw = jieba.cutForSearch?.(text, true) ?? jieba.cut(text, true);
+  // ② 后处理
   return raw
-    .map((item) => item.trim().toLowerCase())
-    .filter((item) => KEYWORD_TOKEN_PATTERN.test(item));
+    .map((item) => item.trim().toLowerCase()) // 去空格 + 转小写
+    .filter((item) => KEYWORD_TOKEN_PATTERN.test(item)); // 过滤无效 token
 }
 
 export function cosineSimilarity(left: number[], right: number[]): number {

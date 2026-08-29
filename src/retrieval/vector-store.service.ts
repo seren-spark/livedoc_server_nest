@@ -87,7 +87,14 @@ export class VectorStoreService implements OnModuleInit {
       }
     }
   }
-
+/**
+ * 
+ * @param document 文档索引请求，包含 doc_id、document_version、title、visibility 等元数据
+ * @param chunks  Chunk 数组，由 chunkMarkdown 生成
+ * @param vectors Dense 向量数组，由 BGE 模型生成
+ * @param sparseVectors Sparse 向量数组，由 BM25 算法生成
+ * @param activate 是否立即激活这些 points
+ */
   async upsertChunks(
     document: DocumentIndexRequest,
     chunks: Chunk[],
@@ -96,6 +103,7 @@ export class VectorStoreService implements OnModuleInit {
     activate = true,
   ): Promise<void> {
     const entries = chunks.map((chunk, index) => ({
+      //为每个 chunk 生成唯一的 point ID
       id: uuidV5(`${chunk.chunk_id}:v${document.document_version}`, uuidV5.URL),
       //Qdrant 的 named vectors。一个 point 同时有 dense 和 sparse 两个向量。
       vector: { dense: vectors[index]!, sparse: sparseVectors[index]! },
@@ -105,8 +113,8 @@ export class VectorStoreService implements OnModuleInit {
     //如果配置 Qdrant，批量 upsert；否则存内存 Map
     if (this.config.vectorStore === "qdrant") {
       await this.qdrant.upsert(this.config.qdrantCollection, {
-        wait: true,
-        points: entries,
+        wait: true,//等待写入完成再返回
+        points: entries, //批量 upsert 所有 entries
       } as any);
     } else {
       for (const entry of entries) {
@@ -123,7 +131,19 @@ export class VectorStoreService implements OnModuleInit {
         document.document_version,
       );
   }
-
+  /**
+   * 搜索
+   * @param queryVector 查询的稠密向量（768维或1536维）
+   * @param context 用户权限上下文
+   * @param scope 权限范围
+   * @param limit 返回数量限制
+   * @param scoreThreshold 相似度阈值
+   * @returns 搜索结果列表，按 score 降序排序
+   * @returns SearchHit 搜索结果项，包含 pointId、score、payload
+   * @returns pointId 点 ID（chunk ID）
+   * @returns score 相似度分数（0-1之间）
+   * @returns payload 元数据（包含 doc_id、visibility、team_id、space_id、chunk content 等）
+   */
   async search(
     queryVector: number[], // 查询的稠密向量（768维或1536维）
     context: AccessContext,// 用户权限上下文
@@ -158,7 +178,19 @@ export class VectorStoreService implements OnModuleInit {
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
   }
-// 原始查询文本
+  /**
+   * 搜索
+   * @param query 原始查询文本
+   * @param querySparse 查询的稀疏向量（词袋表示）
+   * @param context 用户权限上下文
+   * @param scope 权限范围
+   * @param limit 返回数量限制
+   * @returns 搜索结果列表，按 score 降序排序
+   * @returns SearchHit 搜索结果项，包含 pointId、score、payload
+   * @returns pointId 点 ID（chunk ID）
+   * @returns score 相似度分数（0-1之间）
+   * @returns payload 元数据（包含 doc_id、visibility、team_id、space_id、chunk content 等）
+   */
   async keywordSearch(
     query: string,
     querySparse: SparseEmbedding, // 查询的稀疏向量（词袋表示）

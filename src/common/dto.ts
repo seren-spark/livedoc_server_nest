@@ -85,10 +85,17 @@ export class AgentToolArgumentsDto {
   reason!: string;
 }
 
+/**
+ * 校验模型返回的参数是否符合 schema 规范
+ * @param value 模型返回的参数
+ * @param retrievalRequired 是否需要检索域
+ * @returns 校验后的参数
+ */
 export async function validateAgentToolArguments(
   value: Record<string, unknown>,
   retrievalRequired: boolean,
 ): Promise<AgentToolArgumentsDto> {
+  //用 class-transformer 把普通对象转为 AgentToolArgumentsDto 类实例。
   const dto = plainToInstance(AgentToolArgumentsDto, value);
   await validateOrReject(dto, { whitelist: true, forbidNonWhitelisted: true });
   if (retrievalRequired && !dto.retrieval_domain) {
@@ -174,7 +181,7 @@ export class DocumentCreateDto {
 
   @IsOptional()
   @IsBoolean()
-  index_now = true;
+  index_now = true;//保存文档后是否立即进入索引队列 。
 
   @IsOptional()
   editor_content?: Record<string, unknown> | null;
@@ -300,10 +307,103 @@ export class EditorContextDto {
 export class CurrentDocumentDto {
   @IsOptional()
   @IsString()
+  @MaxLength(128)
+  doc_id?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  document_version?: number;
+
+  @IsOptional()
+  @IsString()
   title = '未命名文档';
 
   @IsString()
   content!: string;
+}
+
+export class EditableGlossaryItemDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  id?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(160)
+  term!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  definition!: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @IsString({ each: true })
+  aliases: string[] = [];
+}
+
+export class EditableStyleItemDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  id?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  label!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  instruction!: string;
+}
+
+export class EditableGlobalSettingItemDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  id?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(160)
+  key!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1200)
+  value!: string;
+}
+
+export class DocumentMemoryUpdateDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  expected_memory_version!: number;
+
+  @IsArray()
+  @ArrayMaxSize(30)
+  @ValidateNested({ each: true })
+  @Type(() => EditableGlossaryItemDto)
+  glossary!: EditableGlossaryItemDto[];
+
+  @IsArray()
+  @ArrayMaxSize(8)
+  @ValidateNested({ each: true })
+  @Type(() => EditableStyleItemDto)
+  style_tags!: EditableStyleItemDto[];
+
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => EditableGlobalSettingItemDto)
+  global_settings!: EditableGlobalSettingItemDto[];
 }
 
 export class AiWriteDto {

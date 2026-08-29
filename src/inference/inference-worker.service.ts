@@ -14,6 +14,11 @@ export class InferenceWorkerService implements OnModuleDestroy {
 
   constructor(private readonly config: AppConfig) {}
 
+  /**
+   * 向 worker 线程发送 embed 任务
+   * @param texts The texts to embed.
+   * @returns The embeddings for each text.
+   */
   async embed(texts: string[]): Promise<number[][]> {
     return this.request('embed', { texts });
   }
@@ -21,7 +26,12 @@ export class InferenceWorkerService implements OnModuleDestroy {
   async countEmbeddingTokens(texts: string[]): Promise<number[]> {
     return this.request('count_embedding_tokens', { texts });
   }
-
+  /**
+   * 向 worker 线程发送 rerank 任务
+   * @param query 用户查询
+   * @param passages 候选文档列表
+   * @returns The rerank scores for each passage
+   */
   async rerank(query: string, passages: string[]): Promise<number[]> {
     return this.request('rerank', { query, passages });
   }
@@ -37,7 +47,9 @@ export class InferenceWorkerService implements OnModuleDestroy {
     if (this.pending.size >= this.config.inferenceMaxPending) {
       return Promise.reject(new Error('Inference queue is full; retry later'));
     }
+    // 确保 worker 线程已启动
     this.ensureWorker();
+    // 生成唯一请求 ID
     const id = ++this.sequence;
     return new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -46,6 +58,7 @@ export class InferenceWorkerService implements OnModuleDestroy {
       }, this.config.inferenceRequestTimeoutSeconds * 1000);
       this.pending.set(id, { resolve, reject, timeout });
       try {
+        // 发送请求
         this.worker!.postMessage({ id, type, payload });
       } catch (error) {
         clearTimeout(timeout);

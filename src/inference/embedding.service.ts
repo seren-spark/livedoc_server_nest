@@ -17,11 +17,20 @@ export class EmbeddingService {
     return this.config.embeddingDim;
   }
 
+  /**
+   * 单文本 embedding 复用 batch 接口，取第一个结果
+   * @param text 
+   * 768 维稠密向量（BGE 模型输出）
+   * number[]: [0.0234, -0.0567, 0.1234, ..., 0.0891]    
+   */
   async embed(text: string): Promise<number[]> {
-    //单个文本 embedding，复用 batch。
     return (await this.embedBatch([text]))[0] ?? [];
   }
-
+/**
+ * 批量 embedding
+ * @param texts 
+ * @returns 
+ */
   async embedBatch(texts: string[]): Promise<number[][]> {
     //默认 embeddingProvider = 'hash' 。也就是说， 如果不配置环境变量，Dense 向量不是真模型生成的，而是 hashEmbedding 生成的伪向量 。这是本地开发无 GPU 时的回退方案。
     if (this.config.embeddingProvider === "transformers")

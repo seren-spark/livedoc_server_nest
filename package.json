@@ -26,6 +26,7 @@
     "type-check": "tsc -p tsconfig.json --noEmit",
     "validate:evals": "tsx scripts/evaluate-rag.ts --validate-only",
     "db:migrate": "tsx scripts/migrate.ts",
+    "memory:backfill": "tsx scripts/backfill-document-memory.ts",
     "qdrant:init": "tsx scripts/init-qdrant.ts",
     "seed:demo": "node --max-old-space-size=4096 --enable-source-maps --loader ts-node/esm scripts/seed-demo.ts",
     "config:check": "tsx scripts/check-config.ts",

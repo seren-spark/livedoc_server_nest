@@ -179,6 +179,40 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         INDEX ix_conversation_memory_scope (conversation_id, user_id, space_id, created_at),
         INDEX ix_conversation_memory_expiry (expires_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS conversation_turns (
+        turn_id VARCHAR(32) PRIMARY KEY, conversation_id VARCHAR(128) NOT NULL,
+        user_id VARCHAR(128) NOT NULL, space_id VARCHAR(128) NOT NULL,
+        doc_id VARCHAR(128) NULL, user_content LONGTEXT NOT NULL,
+        assistant_content LONGTEXT NOT NULL, created_at DATETIME(6) NOT NULL,
+        expires_at DATETIME(6) NOT NULL,
+        INDEX ix_turns_scope (conversation_id, user_id, space_id, doc_id, created_at),
+        INDEX ix_turns_expiry (expires_at), INDEX ix_turns_document (doc_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS document_memory_profiles (
+        doc_id VARCHAR(128) PRIMARY KEY, space_id VARCHAR(128) NOT NULL,
+        source_document_version INT NOT NULL DEFAULT 0,
+        memory_version INT NOT NULL DEFAULT 0, status VARCHAR(32) NOT NULL,
+        glossary JSON NOT NULL, style_tags JSON NOT NULL,
+        global_settings JSON NOT NULL, suppressed_keys JSON NOT NULL,
+        source_chunk_hashes JSON NOT NULL, last_error TEXT NULL,
+        created_at DATETIME(6) NOT NULL, updated_at DATETIME(6) NOT NULL,
+        INDEX ix_memory_profiles_scope (space_id, updated_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS document_memory_jobs (
+        job_id VARCHAR(32) PRIMARY KEY, doc_id VARCHAR(128) NOT NULL,
+        document_version INT NOT NULL, generation INT NOT NULL,
+        status VARCHAR(32) NOT NULL, attempts INT NOT NULL DEFAULT 0,
+        max_attempts INT NOT NULL DEFAULT 3, requested_by VARCHAR(128) NOT NULL,
+        space_id VARCHAR(128) NOT NULL, force_full BOOLEAN NOT NULL DEFAULT FALSE,
+        dedupe_key VARCHAR(320) NULL, worker_id VARCHAR(128) NULL,
+        lease_expires_at DATETIME(6) NULL, next_run_at DATETIME(6) NULL,
+        error TEXT NULL, created_at DATETIME(6) NOT NULL,
+        started_at DATETIME(6) NULL, finished_at DATETIME(6) NULL,
+        updated_at DATETIME(6) NOT NULL,
+        INDEX ix_memory_jobs_claim (status, next_run_at, lease_expires_at),
+        INDEX ix_memory_jobs_document (doc_id, document_version),
+        UNIQUE INDEX ux_memory_jobs_dedupe (dedupe_key)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS rag_traces (
         trace_id VARCHAR(64) PRIMARY KEY, user_id VARCHAR(128) NULL,
         space_id VARCHAR(128) NULL, entrypoint VARCHAR(64) NOT NULL,

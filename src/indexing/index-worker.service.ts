@@ -15,9 +15,14 @@ export class IndexWorkerService {
     private readonly store: VectorStoreService,
     private readonly config: AppConfig,
   ) {}
-
+  /**
+   * 索引工作线程一次运行
+   * @param workerId 工作线程 ID
+   * @returns 索引任务记录
+   */
   async runOnce(workerId: string): Promise<IndexJobRecord | null> {
-    //抢占任务
+    //抢占任务， 调用 claimNext 从 index_jobs 表抢一个任务。
+    // 没抢到直接返回，外层 worker.ts 会 sleep 后再试。
     const job = await this.jobs.claimNext(workerId);
     if (!job) return null;
     const heartbeat = setInterval(

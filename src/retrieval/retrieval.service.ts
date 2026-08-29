@@ -59,7 +59,15 @@ export class RetrievalService {
     );
     return chunks.length;
   }
-
+  /**
+   * 检索
+   * @param request 搜索请求
+   * @param context 用户身份、space_id、team_ids（权限控制）
+   * @param queryVariants 搜索查询变体
+   * @param expansionSource 变体来源标记：'original' / 'tool_call' / 'fallback'
+   * @param preprocessingMs 预处理耗时
+   * @returns 检索结果
+   */
   async searchWithTrace(
     request: SearchDto,
     context: AccessContext,
@@ -68,6 +76,7 @@ export class RetrievalService {
     preprocessingMs = 0,
   ): Promise<{ citations: Citation[]; trace: RetrievalTrace }> {
     const totalStarted = performance.now();
+    //prepareQueryVariants（查询变体准备）
     const queries = prepareQueryVariants(
       request.query,
       request.context,
@@ -75,6 +84,7 @@ export class RetrievalService {
     );
     const rewritten = queries[0] ?? request.query;
     const retrievalStarted = performance.now();
+    //多查询检索
     const { dense, keyword, candidates } = await this.retrieveMultiQuery(
       request,
       context,
@@ -82,17 +92,21 @@ export class RetrievalService {
     );
     const retrievalMs = elapsedMs(retrievalStarted);
     const rerankStarted = performance.now();
+    //rerank 精排
     const reranked = await this.reranker.rerank(
       rewritten,
       candidates,
       this.config.rerankTopN,
     );
     const rerankMs = elapsedMs(rerankStarted);
+    //去重
     const deduped = dedupeHits(reranked);
+    //转换为 Citation
     const raw = deduped
       .slice(0, request.top_k)
       .map((hit, index) => hitToCitation(index + 1, hit));
     const compressionStarted = performance.now();
+    //压缩上下文
     const citations = this.compressor.compress(raw, rewritten);
     const trace: RetrievalTrace = {
       trace_id: randomUUID().replaceAll("-", ""),
@@ -134,6 +148,7 @@ export class RetrievalService {
     context?: AccessContext;
   }): Promise<{ citations: Citation[]; trace: RetrievalTrace }> {
     const totalStarted = performance.now();
+
     const queries = prepareQueryVariants(
       options.query,
       options.contextText ?? "",
@@ -264,19 +279,27 @@ export class RetrievalService {
     return { citations, trace };
   }
 
+  /**
+   * 多查询召回
+   * @param request 搜索请求
+   * @param context 上下文
+   * @param queries 多个查询变体（原始查询 + 改写/扩展的查询）
+   * @returns 合并后的召回结果
+   */
   private async retrieveMultiQuery(
     request: SearchDto,
     context: AccessContext,
-    queries: string[],// 多个查询变体（原始查询 + 改写/扩展的查询）
+    queries: string[], // 多个查询变体（原始查询 + 改写/扩展的查询）
   ) {
     const denseRankings: SearchHit[][] = []; // 存储每路 Dense 召回结果
-    const keywordRankings: SearchHit[][] = [];  // 存储每路 Sparse 召回结果
+    const keywordRankings: SearchHit[][] = []; // 存储每路 Sparse 召回结果
     const limit = Math.max(request.top_k * 4, 20); // 多召回一些，后续再裁剪
     // 对每个查询变体分别执行两路召回
     for (const query of queries) {
       // Dense 召回：语义相似度
       if (request.mode === "dense" || request.mode === "hybrid") {
         denseRankings.push(
+          // 检索 Dense 召回结果
           await this.store.search(
             await this.embeddings.embed(query), // 先计算查询向量
             context,
@@ -286,12 +309,12 @@ export class RetrievalService {
           ),
         );
       }
-       // Sparse 召回：关键词匹配
+      // Sparse 召回：关键词匹配
       if (request.mode === "keyword" || request.mode === "hybrid") {
         keywordRankings.push(
           await this.store.keywordSearch(
             query,
-            this.sparse.embedQuery(query),// 计算查询的稀疏向量
+            this.sparse.embedQuery(query), // 计算查询的稀疏向量
             context,
             request.scope,
             limit,
@@ -310,12 +333,18 @@ export class RetrievalService {
               ...keywordRankings.map((hits) => ["keyword", hits] as const),
             ];
     return {
-      dense: mergeRankingsUnique(denseRankings),  // 合并所有 Dense 结果
-      keyword: mergeRankingsUnique(keywordRankings),  // 合并所有 Sparse 结果
-      candidates: rrfFuseMany(rankings),  // RRF 融合
+      dense: mergeRankingsUnique(denseRankings), // 合并所有 Dense 结果
+      keyword: mergeRankingsUnique(keywordRankings), // 合并所有 Sparse 结果
+      candidates: rrfFuseMany(rankings), // RRF 融合
     };
   }
-
+  /**
+   * 确保切出来的 chunks 在真实 tokenizer 下不超过预算
+   * @param docId
+   * @param title
+   * @param content
+   * @returns
+   */
   private async prepareChunksForEmbedding(
     docId: string,
     title: string,
@@ -331,6 +360,13 @@ export class RetrievalService {
           Math.max(0, planningBudget - 1),
         ),
       });
+      /**
+       * passages = [
+              "title: RAG 学习笔记\npath: RAG 学习笔记 > 检索 > Dense\nDense 负责语义召回，使用 BGE 模型生成向量。",
+              "title: RAG 学习笔记\npath: RAG 学习笔记 > 检索 > Sparse\nSparse 负责词项匹配，擅长精确命中。"
+            ]       
+       */
+      //把每个 chunk 转换成最终传给 embedding 模型的文本
       const passages = chunks.map(buildChunkPassage);
       const actualCounts = await this.embeddings.countTokens(passages);
       if (actualCounts.length !== passages.length) {
@@ -350,10 +386,7 @@ export class RetrievalService {
       const scaled = Math.floor(
         planningBudget * (this.config.chunkMaxTokens / largest) * 0.92,
       );
-      planningBudget = Math.max(
-        64,
-        Math.min(planningBudget - 16, scaled),
-      );
+      planningBudget = Math.max(64, Math.min(planningBudget - 16, scaled));
     }
 
     throw new Error(
@@ -362,15 +395,27 @@ export class RetrievalService {
   }
 }
 
+/**
+ * 查询变体准备
+ * @param original 原始查询
+ * @param _context 上下文（未使用）
+ * @param variants 变体查询
+ * @return string[]  去重后的查询变体列表
+ */
 export function prepareQueryVariants(
   original: string,
   _context: string,
   variants?: string[],
 ): string[] {
+  //最终返回的 query 列表
   const result: string[] = [];
+  //用于去重的集合（小写后的 key）
   const seen = new Set<string>();
+
   for (const candidate of [original, ...(variants ?? [])]) {
+    //转字符串 → 去首尾空格 → 连续空格压缩为单个
     const normalized = String(candidate).trim().replace(/\s+/g, " ");
+    //小写化用于去重判断
     const key = normalized.toLocaleLowerCase();
     if (!normalized || seen.has(key)) continue;
     seen.add(key);
@@ -379,16 +424,22 @@ export function prepareQueryVariants(
   return result.length ? result : [original.trim()];
 }
 
-//RRF 融合算法
+/**
+ * RRF 融合算法
+ * @param rankings 合并所有后的结果列表
+ * @param k RRF 常数，平滑排名影响
+ * @returns 融合后的结果列表，按 RRF 分数降序排序
+ */
 export function rrfFuseMany(
   rankings: ReadonlyArray<readonly ["dense" | "keyword", SearchHit[]]>,
-  k = 60,  // RRF 常数，平滑排名影响
+  k = 60, // RRF 常数，平滑排名影响
 ): SearchHit[] {
-  const byChunk = new Map<string, SearchHit>();       // 存储每个 chunk 的最佳结果
-  const scores = new Map<string, number>();           // RRF 融合分数
-  const denseScores = new Map<string, number>();      // Dense 通道最高分
-  const keywordScores = new Map<string, number>();    // Sparse 通道最高分
+  const byChunk = new Map<string, SearchHit>(); // 存储每个 chunk 的最佳结果
+  const scores = new Map<string, number>(); // RRF 融合分数
+  const denseScores = new Map<string, number>(); // Dense 通道最高分
+  const keywordScores = new Map<string, number>(); // Sparse 通道最高分
   // 遍历所有通道的所有结果
+
   for (const [channel, hits] of rankings) {
     hits.forEach((hit, index) => {
       const key = String(hit.payload.chunk_id ?? hit.pointId);
@@ -410,11 +461,11 @@ export function rrfFuseMany(
   return [...byChunk.entries()]
     .map(([key, hit]) => ({
       ...hit,
-      score: scores.get(key) ?? 0,  // 用 RRF 分数替换原始分数
+      score: scores.get(key) ?? 0, // 用 RRF 分数替换原始分数
       payload: {
         ...hit.payload,
-        dense_score: denseScores.get(key),      // 附加 Dense 原始分
-        keyword_score: keywordScores.get(key),  // 附加 Sparse 原始分
+        dense_score: denseScores.get(key), // 附加 Dense 原始分
+        keyword_score: keywordScores.get(key), // 附加 Sparse 原始分
       },
     }))
     .sort((a, b) => b.score - a.score);
@@ -432,7 +483,13 @@ export function mergeRankingsUnique(rankings: SearchHit[][]): SearchHit[] {
   return [...byChunk.values()].sort((a, b) => b.score - a.score);
 }
 
+/**
+ * 去重
+ * @param hits 原始 hit 列表
+ * @returns 去重后的 hit 列表
+ */
 export function dedupeHits(hits: SearchHit[]): SearchHit[] {
+  //按位置精确去重，保留"最新版本 + 最高分"。
   const latest = new Map<string, SearchHit>();
   for (const hit of hits) {
     const key = `${hit.payload.doc_id}:${hit.payload.chunk_index}`;
@@ -441,6 +498,8 @@ export function dedupeHits(hits: SearchHit[]): SearchHit[] {
     else {
       const currentVersion = Number(current.payload.document_version ?? 1);
       const nextVersion = Number(hit.payload.document_version ?? 1);
+      //遇到相同 key 时，优先保留 document_version 更大 的
+      //版本相同时，保留 score 更高 的
       if (
         nextVersion > currentVersion ||
         (nextVersion === currentVersion && hit.score > current.score)
@@ -448,8 +507,10 @@ export function dedupeHits(hits: SearchHit[]): SearchHit[] {
         latest.set(key, hit);
     }
   }
-  const seen = new Set<string>();
+  //按内容前缀去重
+  const seen = new Set<string>(); //同时记录 position 和 content 前 160 字符
   const result: SearchHit[] = [];
+  //先按 score 降序排序，高分优先保留
   for (const hit of [...latest.values()].sort((a, b) => b.score - a.score)) {
     const position = `${hit.payload.doc_id}:${hit.payload.chunk_index}`;
     const content = String(hit.payload.content ?? "").slice(0, 160);
@@ -471,7 +532,9 @@ function hitToCitation(index: number, hit: SearchHit): Citation {
     title: String(payload.title),
     content: String(payload.content ?? ""),
     snippet: String(payload.content ?? "").slice(0, 320),
-    source_anchor: String(payload.source_anchor ?? `chunk-${String(payload.chunk_id)}`),
+    source_anchor: String(
+      payload.source_anchor ?? `chunk-${String(payload.chunk_id)}`,
+    ),
     source_type: payload.source_type,
     visibility: payload.visibility,
     score: round(hit.score, 4),

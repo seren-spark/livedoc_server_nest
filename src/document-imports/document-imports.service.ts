@@ -11,6 +11,9 @@ import { DocumentsService, mapDocumentRow } from '../documents/documents.service
 import { toIndexRequest, type DocumentRecord } from '../documents/document.types.js';
 import { IndexJobsService } from '../indexing/index-jobs.service.js';
 import type { IndexJobRecord } from '../indexing/index-job.types.js';
+import { DocumentMemoryJobsService } from '../documents/document-memory-jobs.service.js';
+import { DocumentMemoryService } from '../documents/document-memory.service.js';
+import { PersistentJobStore } from '../jobs/persistent-job-store.js';
 import { BLOB_STORAGE, type BlobStorage } from '../storage/blob-storage.js';
 import type { DocumentImportDraftDto } from '../common/dto.js';
 import type { DocumentImportRecord, ImportJobRecord } from './document-import.types.js';
@@ -20,6 +23,7 @@ import { validateDocumentFile } from '../uploads/document-signature.js';
 export class DocumentImportsService {
   private readonly imports = new Map<string, DocumentImportRecord>();
   private readonly jobs = new Map<string, ImportJobRecord>();
+  private readonly jobStore: PersistentJobStore<ImportJobRecord>;
 
   constructor(
     private readonly config: AppConfig,
@@ -27,8 +31,19 @@ export class DocumentImportsService {
     private readonly assets: AssetsService,
     private readonly documents: DocumentsService,
     private readonly indexJobs: IndexJobsService,
+    private readonly memoryJobs: DocumentMemoryJobsService,
+    private readonly documentMemory: DocumentMemoryService,
     @Inject(BLOB_STORAGE) private readonly blobs: BlobStorage,
-  ) {}
+  ) {
+    this.jobStore = new PersistentJobStore({
+      database: this.database,
+      enabled: () => this.database.importJobsEnabled,
+      tableName: 'document_import_jobs',
+      leaseSeconds: () => this.config.importJobLeaseSeconds,
+      jobs: this.jobs,
+      mapRow: mapJob,
+    });
+  }
 
   async createUpload(input: {
     data: Readable; filename: string; mime_type: string; title: string; visibility: Visibility;
@@ -273,6 +288,7 @@ export class DocumentImportsService {
         return { docId, jobId };
       });
       if (!ids.jobId) throw new ConflictException('Confirmed import has no index job.');
+      await this.queueDocumentMemory(await this.documents.require(ids.docId), context);
       return this.confirmationResponse(ids.docId, ids.jobId);
     }
 
@@ -312,6 +328,7 @@ export class DocumentImportsService {
       await this.documents.markQueued(document.doc_id, job.job_id);
     }
     await this.assets.link(assets.map((asset) => asset.asset_id), document.doc_id, context);
+    await this.queueDocumentMemory(document, context);
     await this.patch(importId, {
       status: 'confirmed', stage: '已保存到知识库', document_id: document.doc_id,
       progress: 100, error: null,
@@ -361,66 +378,17 @@ export class DocumentImportsService {
   }
 
   async claimNext(workerId: string): Promise<ImportJobRecord | null> {
-    const now = new Date();
-    let claimed: ImportJobRecord | null = null;
-    if (!this.database.importJobsEnabled) {
-      const candidate = [...this.jobs.values()].sort((a,b) => a.created_at.getTime()-b.created_at.getTime()).find((job) =>
-        (['queued','retry_wait'].includes(job.status) && job.next_run_at <= now) ||
-        (job.status === 'running' && Boolean(job.lease_expires_at && job.lease_expires_at <= now)));
-      if (!candidate) return null;
-      claimed = { ...candidate, status: 'running', attempts: candidate.attempts + 1, worker_id: workerId,
-        lease_expires_at: new Date(now.getTime() + this.config.importJobLeaseSeconds * 1000),
-        started_at: candidate.started_at ?? now, updated_at: now };
-      this.jobs.set(claimed.job_id, claimed);
-    } else {
-      const runner = this.database.source.createQueryRunner();
-      await runner.connect(); await runner.startTransaction();
-      try {
-        const rows = await runner.query(
-          `SELECT * FROM document_import_jobs WHERE
-           ((status IN ('queued','retry_wait') AND next_run_at<=?) OR
-            (status='running' AND lease_expires_at<=?))
-           ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED`, [now, now]) as Record<string, unknown>[];
-        if (rows[0]) {
-          claimed = { ...mapJob(rows[0]), status: 'running', attempts: Number(rows[0].attempts)+1,
-            worker_id: workerId, lease_expires_at: new Date(now.getTime()+this.config.importJobLeaseSeconds*1000),
-            started_at: rows[0].started_at ? new Date(rows[0].started_at as string) : now, updated_at: now };
-          await runner.query(`UPDATE document_import_jobs SET status='running',attempts=?,worker_id=?,lease_expires_at=?,started_at=?,updated_at=? WHERE job_id=?`,
-            [claimed.attempts,workerId,claimed.lease_expires_at,claimed.started_at,now,claimed.job_id]);
-        }
-        await runner.commitTransaction();
-      } catch (error) { await runner.rollbackTransaction(); throw error; }
-      finally { await runner.release(); }
-    }
+    const claimed = await this.jobStore.claimNext(workerId);
     if (claimed) await this.patch(claimed.import_id, { status: 'parsing', progress: 15, stage: '解析文档结构', error: null });
     return claimed;
   }
 
   async heartbeat(job: ImportJobRecord): Promise<boolean> {
-    const lease = new Date(Date.now() + this.config.importJobLeaseSeconds * 1000);
-    if (this.database.importJobsEnabled) {
-      const result = await this.database.source.query(
-        `UPDATE document_import_jobs SET lease_expires_at=?,updated_at=UTC_TIMESTAMP(6)
-         WHERE job_id=? AND worker_id=? AND generation=? AND status='running'`,
-        [lease, job.job_id, job.worker_id, job.generation],
-      );
-      return Number(result?.affectedRows ?? 0) === 1;
-    }
-    const current = this.jobs.get(job.job_id);
-    if (!current || current.worker_id !== job.worker_id || current.generation !== job.generation || current.status !== 'running') return false;
-    this.jobs.set(job.job_id, { ...current, lease_expires_at: lease, updated_at: new Date() });
-    return true;
+    return this.jobStore.heartbeat(job.job_id, job.worker_id ?? '', job.generation);
   }
 
   async ownsLease(job: ImportJobRecord): Promise<boolean> {
-    const current = this.database.importJobsEnabled
-      ? (await this.database.query<Record<string, unknown>>('SELECT * FROM document_import_jobs WHERE job_id=?', [job.job_id]))[0]
-      : this.jobs.get(job.job_id);
-    if (!current) return false;
-    const mapped = current instanceof Object && 'job_id' in current && current.created_at instanceof Date
-      ? current as ImportJobRecord
-      : mapJob(current as Record<string, unknown>);
-    return mapped.status === 'running' && mapped.worker_id === job.worker_id && mapped.generation === job.generation && Boolean(mapped.lease_expires_at && mapped.lease_expires_at > new Date());
+    return this.jobStore.ownsLease(job.job_id, job.worker_id, job.generation);
   }
 
   async succeed(job: ImportJobRecord): Promise<void> { await this.finishJob(job, 'succeeded', null); }
@@ -437,31 +405,26 @@ export class DocumentImportsService {
   async remove(importId: string): Promise<void> {
     const current = await this.require(importId);
     if (['uploaded', 'queued', 'parsing', 'retry_wait'].includes(current.status)) {
-      if (this.database.importJobsEnabled) {
-        await this.database.query(
-          `UPDATE document_import_jobs SET status='canceled',worker_id=NULL,lease_expires_at=NULL,
-           error='Canceled by user',finished_at=UTC_TIMESTAMP(6),updated_at=UTC_TIMESTAMP(6)
-           WHERE import_id=? AND status IN ('queued','running','retry_wait')`,
-          [importId],
-        );
-      } else {
-        for (const [id, job] of this.jobs) {
-          if (job.import_id === importId && ['queued', 'running', 'retry_wait'].includes(job.status)) {
-            this.jobs.set(id, { ...job, status: 'canceled', worker_id: null, lease_expires_at: null, error: 'Canceled by user', finished_at: new Date(), updated_at: new Date() });
-          }
-        }
-      }
+      await this.jobStore.cancelWhere({
+        whereSql: 'import_id=?',
+        params: [importId],
+        predicate: (job) => job.import_id === importId,
+        error: 'Canceled by user',
+      });
       await this.patch(importId, { status: 'canceled', stage: '已取消', error: null });
       return;
     }
     await this.assets.removeWhere({ import_id: importId });
     if (this.database.importJobsEnabled) {
-      await this.database.query('DELETE FROM document_import_jobs WHERE import_id=?', [importId]);
       await this.database.query('DELETE FROM document_imports WHERE import_id=?', [importId]);
     } else {
-      for (const [id, job] of this.jobs) if (job.import_id === importId) this.jobs.delete(id);
       this.imports.delete(importId);
     }
+    await this.jobStore.deleteWhere({
+      whereSql: 'import_id=?',
+      params: [importId],
+      predicate: (job) => job.import_id === importId,
+    });
   }
 
   async cleanupExpired(): Promise<number> {
@@ -471,6 +434,19 @@ export class DocumentImportsService {
       : (await this.database.query<{ import_id: string }>("SELECT import_id FROM document_imports WHERE status<>'confirmed' AND updated_at<?", [cutoff])).map((row) => row.import_id);
     for (const id of ids) await this.remove(id);
     return ids.length;
+  }
+
+  private async queueDocumentMemory(document: DocumentRecord, context: AccessContext): Promise<void> {
+    if (!this.config.documentMemoryEnabled || !document.content.trim()) return;
+    try {
+      await this.memoryJobs.enqueue(document, context);
+    } catch (error) {
+      await this.documentMemory.markPending(document);
+      await this.documentMemory.markFailed(
+        document.doc_id,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 
   private async withAssets(record: DocumentImportRecord): Promise<DocumentImportRecord> {
@@ -492,13 +468,12 @@ export class DocumentImportsService {
   }
 
   private async finishJob(job: ImportJobRecord, status: ImportJobRecord['status'], error: string | null, nextRunAt = job.next_run_at): Promise<void> {
-    const next = { ...job, status, error, next_run_at: nextRunAt, worker_id: null, lease_expires_at: null,
-      finished_at: status === 'failed' || status === 'succeeded' ? new Date() : null, updated_at: new Date() };
-    if (this.database.importJobsEnabled) await this.database.query(
-      `UPDATE document_import_jobs SET status=?,error=?,next_run_at=?,worker_id=NULL,lease_expires_at=NULL,finished_at=?,updated_at=?
-       WHERE job_id=? AND worker_id=? AND generation=? AND status='running'`,
-      [next.status,next.error,next.next_run_at,next.finished_at,next.updated_at,next.job_id,job.worker_id,job.generation]);
-    else this.jobs.set(next.job_id, next);
+    await this.jobStore.finish(job.job_id, status, {
+      error,
+      nextRunAt,
+      workerId: job.worker_id,
+      generation: job.generation,
+    });
   }
 }
 

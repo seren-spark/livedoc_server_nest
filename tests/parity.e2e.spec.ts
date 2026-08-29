@@ -50,11 +50,67 @@ describe('Python 34-test parity - Supertest API contracts', () => {
     }).expect(403);
   });
 
+  test('public article feed is readable without a demo session', async () => {
+    const seeded = await api.post('/dev/seed').set(auth(aliceToken)).expect(200);
+    expect(seeded.body.documents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ doc_id: 'public_livedoc_permission_model' }),
+      ]),
+    );
+
+    const feed = await api.get('/public/articles?page_size=8').expect(200);
+    expect(feed.body.total).toBeGreaterThanOrEqual(7);
+    expect(feed.body.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          doc_id: 'public_livedoc_permission_model',
+          visibility: 'public',
+          source_type: 'public_article',
+        }),
+      ]),
+    );
+
+    const detail = await api
+      .get('/public/articles/public_livedoc_permission_model')
+      .expect(200);
+    expect(detail.body.content).toContain('公共知识库面向网站管理员维护');
+    await api.get('/documents').expect(401);
+  });
+
   test('document create only enqueues indexing work', async () => {
     const created = await api.post('/documents').set(auth(aliceToken)).send({ title: 'queued', content: '# h\ncontent' }).expect(202);
     expect(created.body).toMatchObject({ index_status: 'queued', chunk_count: 0 });
     const job = await api.get(`/index-jobs/${created.body.latest_index_job_id}`).set(auth(aliceToken)).expect(200);
     expect(job.body.status).toBe('queued');
+  });
+
+  test('document memory APIs reuse document ACLs and enforce optimistic locking', async () => {
+    const created = await api.post('/documents').set(auth(aliceToken)).send({
+      title: '记忆权限文档', content: '# 口径\n\n产品名称统一为 LiveDoc。', index_now: false,
+    }).expect(201);
+    const memoryUrl = `/documents/${created.body.doc_id}/memory`;
+
+    const pending = await api.get(memoryUrl).set(auth(aliceToken)).expect(200);
+    expect(pending.body).toMatchObject({ status: 'pending', memory_version: 0 });
+    await api.get(memoryUrl).set(auth(bobToken)).expect(403);
+    await api.patch(memoryUrl).set(auth(bobToken)).send({
+      expected_memory_version: 0, glossary: [], style_tags: [], global_settings: [],
+    }).expect(403);
+    await api.post(`${memoryUrl}/refresh`).set(auth(bobToken)).expect(403);
+
+    const updated = await api.patch(memoryUrl).set(auth(aliceToken)).send({
+      expected_memory_version: 0,
+      glossary: [{ term: 'LiveDoc', definition: '智能文档工作台', aliases: [] }],
+      style_tags: [{ label: '技术说明', instruction: '使用简洁、准确的中文。' }],
+      global_settings: [{ key: '产品名', value: '始终写作 LiveDoc。' }],
+    }).expect(200);
+    expect(updated.body.glossary[0]).toMatchObject({ origin: 'user', pinned: true });
+
+    await api.patch(memoryUrl).set(auth(aliceToken)).send({
+      expected_memory_version: 0, glossary: [], style_tags: [], global_settings: [],
+    }).expect(409);
+    await api.post(`${memoryUrl}/refresh`).set(auth(aliceToken)).expect(202);
+    await api.delete(`/documents/${created.body.doc_id}`).set(auth(aliceToken)).expect(200);
   });
 
   test('PDF import is reviewed in the existing editor before one idempotent index job', async () => {
@@ -189,6 +245,17 @@ describe('Python 34-test parity - Supertest API contracts', () => {
     }).expect(503);
     expect(JSON.stringify(response.body)).not.toContain(NO_EVIDENCE_MESSAGE);
     expect(store.points.size).toBe(before);
+  });
+
+  test('summarize_document requires non-empty current document content before SSE starts', async () => {
+    await api.post('/ai/write').set(auth(aliceToken)).send({
+      intent: 'summarize_document', query: '总结', stream: false,
+      current_context: { title: '空文档' },
+    }).expect(400);
+    await api.post('/ai/write').set(auth(aliceToken)).send({
+      intent: 'summarize_document', query: '总结', stream: true,
+      current_context: { title: '空文档' }, current_document: { title: '空文档', content: '   ' },
+    }).expect(400);
   });
 
   test('no-evidence refusal blocks knowledge answers but not editor tasks', async () => {

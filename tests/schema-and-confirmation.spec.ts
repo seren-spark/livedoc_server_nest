@@ -57,6 +57,8 @@ describe('document import confirmation', () => {
       documents as never,
       indexJobs as never,
       {} as never,
+      {} as never,
+      {} as never,
     );
 
     await expect(service.confirm('import-1', {

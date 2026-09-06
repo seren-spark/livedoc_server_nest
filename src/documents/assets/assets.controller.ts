@@ -1,13 +1,13 @@
 import { Controller, Get, Param, PayloadTooLargeException, Post, Req, StreamableFile } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
-import { CurrentAccess } from '../auth/access-context.decorator.js';
-import type { AccessContext } from '../common/types.js';
-import { multipartField, requireMultipartFile } from '../uploads/multipart.js';
+import { CurrentAccess } from '../../auth/access-context.decorator.js';
+import type { AccessContext } from '../../common/types.js';
+import { multipartField, requireMultipartFile } from '../../uploads/multipart.js';
 import { publicAsset } from './asset.types.js';
 import { AssetsService } from './assets.service.js';
-import { DocumentsService } from './documents.service.js';
-import { DocumentImportsService } from '../document-imports/document-imports.service.js';
-import { VisionService } from '../document-imports/vision.service.js';
+import { DocumentsService } from '../documents.service.js';
+import { DocumentImportsService } from '../../document-imports/document-imports.service.js';
+import { VisionService } from '../../document-imports/vision.service.js';
 
 @Controller()
 export class AssetsController {

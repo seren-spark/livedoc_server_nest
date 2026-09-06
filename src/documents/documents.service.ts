@@ -9,12 +9,16 @@ import type { DocumentCreateDto, DocumentUpdateDto } from '../common/dto.js';
 import type { AccessContext, IndexStatus, Visibility } from '../common/types.js';
 import { DatabaseService } from '../database/database.service.js';
 import type { DocumentRecord } from './document.types.js';
+import { DocumentsRepository } from './documents.repository.js';
 
 @Injectable()
 export class DocumentsService {
   private readonly records = new Map<string, DocumentRecord>();
+  private readonly repository: DocumentsRepository;
 
-  constructor(private readonly database: DatabaseService) {}
+  constructor(private readonly database: DatabaseService) {
+    this.repository = new DocumentsRepository(database);
+  }
 
   async create(request: DocumentCreateDto, context: AccessContext): Promise<DocumentRecord> {
     this.assertTeamTarget(request.visibility, request.team_id, context);
@@ -43,29 +47,7 @@ export class DocumentsService {
       updated_at: now,
     };
     if (this.database.metadataEnabled) {
-      await this.database.query(
-        `INSERT INTO knowledge_documents
-          (doc_id, space_id, title, content, visibility, source_type, tags, team_id,
-           owner_id, url, editor_content, source_import_id, document_version, index_status,
-           chunk_count, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'pending', 0, ?, ?)`,
-        [
-          record.doc_id,
-          record.space_id,
-          record.title,
-          record.content,
-          record.visibility,
-          record.source_type,
-          JSON.stringify(record.tags),
-          record.team_id,
-          record.owner_id,
-          record.url,
-          record.editor_content == null ? null : JSON.stringify(record.editor_content),
-          record.source_import_id,
-          now,
-          now,
-        ],
-      );
+      await this.repository.insert(record);
     } else {
       if (this.records.has(record.doc_id)) throw new Error(`Duplicate document: ${record.doc_id}`);
       this.records.set(record.doc_id, record);
@@ -81,57 +63,7 @@ export class DocumentsService {
   ): Promise<{ items: DocumentRecord[]; total: number }> {
     let visible: DocumentRecord[];
     if (this.database.metadataEnabled) {
-      const teamPlaceholders = context.team_ids.map(() => '?').join(',');
-      const teamClause = context.team_ids.length
-        ? `(visibility = 'team' AND space_id = ? AND team_id IN (${teamPlaceholders}))`
-        : 'FALSE';
-      const accessParams: unknown[] = [
-        context.space_id,
-        context.user_id,
-        ...(context.team_ids.length ? [context.space_id, ...context.team_ids] : []),
-      ];
-      const clauses = [`((visibility = 'private' AND space_id = ? AND owner_id = ?) OR ${teamClause} OR visibility = 'public')`];
-      const filterParams: unknown[] = [];
-      if (filters.q?.trim()) {
-        clauses.push('(title LIKE ? OR content LIKE ?)');
-        const like = `%${filters.q.trim()}%`;
-        filterParams.push(like, like);
-      }
-      if (filters.visibility) {
-        clauses.push('visibility = ?');
-        filterParams.push(filters.visibility);
-      }
-      if (filters.source_type) {
-        clauses.push('source_type = ?');
-        filterParams.push(filters.source_type);
-      }
-      if (filters.tag?.trim()) {
-        clauses.push('JSON_CONTAINS(tags, JSON_QUOTE(?))');
-        filterParams.push(filters.tag.trim());
-      }
-      if (filters.team_id?.trim()) {
-        clauses.push('team_id = ?');
-        filterParams.push(filters.team_id.trim());
-      }
-      if (filters.index_status) {
-        clauses.push('index_status = ?');
-        filterParams.push(filters.index_status);
-      }
-      const where = clauses.join(' AND ');
-      const params = [...accessParams, ...filterParams];
-      const countRows = await this.database.query<{ total: number | string }>(
-        `SELECT COUNT(*) AS total FROM knowledge_documents WHERE ${where}`,
-        params,
-      );
-      const offset = (page - 1) * pageSize;
-      visible = (
-        await this.database.query<Record<string, unknown>>(
-          `SELECT * FROM knowledge_documents WHERE ${where}
-           ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
-          [...params, pageSize, offset],
-        )
-      ).map(mapDocumentRow);
-      return { items: visible, total: Number(countRows[0]?.total ?? 0) };
+      return this.repository.list(context, page, pageSize, filters);
     } else {
       visible = [...this.records.values()].filter((record) => canAccessDocument(record, context));
       const query = filters.q?.trim().toLocaleLowerCase();
@@ -154,30 +86,7 @@ export class DocumentsService {
     filters: { q?: string } = {},
   ): Promise<{ items: DocumentRecord[]; total: number }> {
     if (this.database.metadataEnabled) {
-      const clauses = [
-        "visibility = 'public'",
-        "source_type IN ('public_article', 'article')",
-      ];
-      const params: unknown[] = [];
-      if (filters.q?.trim()) {
-        clauses.push('(title LIKE ? OR content LIKE ?)');
-        const like = `%${filters.q.trim()}%`;
-        params.push(like, like);
-      }
-      const where = clauses.join(' AND ');
-      const countRows = await this.database.query<{ total: number | string }>(
-        `SELECT COUNT(*) AS total FROM knowledge_documents WHERE ${where}`,
-        params,
-      );
-      const offset = (page - 1) * pageSize;
-      const items = (
-        await this.database.query<Record<string, unknown>>(
-          `SELECT * FROM knowledge_documents WHERE ${where}
-           ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
-          [...params, pageSize, offset],
-        )
-      ).map(mapDocumentRow);
-      return { items, total: Number(countRows[0]?.total ?? 0) };
+      return this.repository.listPublic(page, pageSize, filters.q);
     }
 
     let visible = [...this.records.values()].filter(
@@ -210,11 +119,7 @@ export class DocumentsService {
 
   async get(docId: string): Promise<DocumentRecord | null> {
     if (!this.database.metadataEnabled) return this.records.get(docId) ?? null;
-    const rows = await this.database.query<Record<string, unknown>>(
-      'SELECT * FROM knowledge_documents WHERE doc_id = ?',
-      [docId],
-    );
-    return rows[0] ? mapDocumentRow(rows[0]) : null;
+    return this.repository.findById(docId);
   }
 
   async require(docId: string): Promise<DocumentRecord> {
@@ -277,32 +182,7 @@ export class DocumentsService {
       editor_content: request.editor_content === undefined ? current.editor_content : request.editor_content,
     };
     if (this.database.metadataEnabled) {
-      const result = await this.database.source.query(
-        `UPDATE knowledge_documents SET title=?, content=?, visibility=?, source_type=?, tags=?,
-         team_id=?, owner_id=?, url=?, editor_content=?, document_version=?, index_status=?, active_index_version=?,
-         latest_index_job_id=?, index_error=?, updated_at=?
-          WHERE doc_id=? AND document_version=?`,
-        [
-          next.title,
-          next.content,
-          next.visibility,
-          next.source_type,
-          JSON.stringify(next.tags),
-          next.team_id,
-          next.owner_id,
-          next.url,
-          next.editor_content == null ? null : JSON.stringify(next.editor_content),
-          next.document_version,
-          next.index_status,
-          next.active_index_version,
-          next.latest_index_job_id,
-          next.index_error,
-          next.updated_at,
-          docId,
-          current.document_version,
-        ],
-      );
-      if (Number(result?.affectedRows ?? 0) !== 1) {
+      if (!(await this.repository.update(next, current.document_version))) {
         throw new ConflictException({
           code: 'DOCUMENT_VERSION_CONFLICT',
           message: 'Document changed while saving. Reload and retry.',
@@ -314,7 +194,7 @@ export class DocumentsService {
 
   async delete(docId: string, context: AccessContext): Promise<void> {
     await this.getWritable(docId, context);
-    if (this.database.metadataEnabled) await this.database.query('DELETE FROM knowledge_documents WHERE doc_id = ?', [docId]);
+    if (this.database.metadataEnabled) await this.repository.delete(docId);
     else this.records.delete(docId);
   }
 /**
@@ -367,20 +247,7 @@ export class DocumentsService {
     const current = await this.require(docId);
     const next = { ...current, ...patch };
     if (this.database.metadataEnabled) {
-      await this.database.query(
-        `UPDATE knowledge_documents SET index_status=?, active_index_version=?, latest_index_job_id=?,
-         chunk_count=?, indexed_at=?, index_error=?, updated_at=? WHERE doc_id=?`,
-        [
-          next.index_status,
-          next.active_index_version,
-          next.latest_index_job_id,
-          next.chunk_count,
-          next.indexed_at,
-          next.index_error,
-          next.updated_at,
-          docId,
-        ],
-      );
+      await this.repository.updateIndexState(next);
     } else this.records.set(docId, next);
   }
 }
@@ -394,52 +261,4 @@ export function canAccessDocument(record: DocumentRecord, context: AccessContext
 
 function defined<T extends object>(value: T): Partial<T> {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as Partial<T>;
-}
-
-function parseTags(value: unknown): string[] {
-  if (Array.isArray(value)) return value.map(String);
-  if (typeof value === 'string') {
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      return Array.isArray(parsed) ? parsed.map(String) : [];
-    } catch {
-      return [];
-    }
-  }
-  return [];
-}
-
-export function mapDocumentRow(row: Record<string, unknown>): DocumentRecord {
-  return {
-    doc_id: String(row.doc_id),
-    space_id: String(row.space_id),
-    title: String(row.title),
-    content: String(row.content),
-    visibility: row.visibility as DocumentRecord['visibility'],
-    source_type: row.source_type as DocumentRecord['source_type'],
-    tags: parseTags(row.tags),
-    team_id: row.team_id == null ? null : String(row.team_id),
-    owner_id: row.owner_id == null ? null : String(row.owner_id),
-    url: row.url == null ? null : String(row.url),
-    editor_content: parseObject(row.editor_content),
-    source_import_id: row.source_import_id == null ? null : String(row.source_import_id),
-    document_version: Number(row.document_version),
-    index_status: row.index_status as DocumentRecord['index_status'],
-    active_index_version: row.active_index_version == null ? null : Number(row.active_index_version),
-    latest_index_job_id: row.latest_index_job_id == null ? null : String(row.latest_index_job_id),
-    chunk_count: Number(row.chunk_count),
-    indexed_at: row.indexed_at == null ? null : new Date(row.indexed_at as string | number | Date),
-    index_error: row.index_error == null ? null : String(row.index_error),
-    created_at: new Date(row.created_at as string | number | Date),
-    updated_at: new Date(row.updated_at as string | number | Date),
-  };
-}
-
-function parseObject(value: unknown): Record<string, unknown> | null {
-  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
-  if (typeof value !== 'string') return null;
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
-  } catch { return null; }
 }

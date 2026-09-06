@@ -4,19 +4,23 @@ import type { Readable } from 'node:stream';
 import type { AccessContext, Visibility } from '../common/types.js';
 import { AppConfig } from '../config/app-config.js';
 import { DatabaseService } from '../database/database.service.js';
-import { publicAsset } from '../documents/asset.types.js';
-import type { DocumentAssetRecord } from '../documents/asset.types.js';
-import { AssetsService, mapAssetRow } from '../documents/assets.service.js';
-import { DocumentsService, mapDocumentRow } from '../documents/documents.service.js';
+import { publicAsset } from '../documents/assets/asset.types.js';
+import type { DocumentAssetRecord } from '../documents/assets/asset.types.js';
+import { AssetsService } from '../documents/assets/assets.service.js';
+import { DocumentsService } from '../documents/documents.service.js';
 import { toIndexRequest, type DocumentRecord } from '../documents/document.types.js';
 import { IndexJobsService } from '../indexing/index-jobs.service.js';
 import type { IndexJobRecord } from '../indexing/index-job.types.js';
-import { DocumentMemoryJobsService } from '../documents/document-memory-jobs.service.js';
-import { DocumentMemoryService } from '../documents/document-memory.service.js';
+import { DocumentMemoryJobsService } from '../documents/document-memory/document-memory-jobs.service.js';
+import { DocumentMemoryService } from '../documents/document-memory/document-memory.service.js';
 import { PersistentJobStore } from '../jobs/persistent-job-store.js';
 import { BLOB_STORAGE, type BlobStorage } from '../storage/blob-storage.js';
 import type { DocumentImportDraftDto } from '../common/dto.js';
 import type { DocumentImportRecord, ImportJobRecord } from './document-import.types.js';
+import {
+  DocumentImportsRepository,
+  mapImportJobRow,
+} from './document-imports.repository.js';
 import { validateDocumentFile } from '../uploads/document-signature.js';
 
 @Injectable()
@@ -24,6 +28,7 @@ export class DocumentImportsService {
   private readonly imports = new Map<string, DocumentImportRecord>();
   private readonly jobs = new Map<string, ImportJobRecord>();
   private readonly jobStore: PersistentJobStore<ImportJobRecord>;
+  private readonly repository: DocumentImportsRepository;
 
   constructor(
     private readonly config: AppConfig,
@@ -35,13 +40,14 @@ export class DocumentImportsService {
     private readonly documentMemory: DocumentMemoryService,
     @Inject(BLOB_STORAGE) private readonly blobs: BlobStorage,
   ) {
+    this.repository = new DocumentImportsRepository(database);
     this.jobStore = new PersistentJobStore({
       database: this.database,
       enabled: () => this.database.importJobsEnabled,
       tableName: 'document_import_jobs',
       leaseSeconds: () => this.config.importJobLeaseSeconds,
       jobs: this.jobs,
-      mapRow: mapJob,
+      mapRow: mapImportJobRow,
     });
   }
 
@@ -86,19 +92,7 @@ export class DocumentImportsService {
         created_at: now, updated_at: now,
       };
       if (this.database.importJobsEnabled) {
-        await this.database.source.transaction(async (manager) => {
-          await manager.query(
-            `INSERT INTO document_imports
-             (import_id,space_id,owner_id,visibility,team_id,tags,folder,title,filename,mime_type,
-              file_size,sha256,source_asset_id,status,progress,stage,parsed_content,editor_content,
-              parser_version,error,document_id,latest_job_id,created_at,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, importValues(record));
-          await manager.query(
-            `INSERT INTO document_import_jobs
-             (job_id,import_id,status,attempts,max_attempts,generation,requested_by,space_id,config_fingerprint,worker_id,
-              lease_expires_at,next_run_at,error,created_at,started_at,finished_at,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, jobValues(job));
-        });
+        await this.repository.create(record, job);
       } else { this.imports.set(importId, record); this.jobs.set(job.job_id, job); }
       return this.withAssets(record);
     } catch (error) {
@@ -111,10 +105,7 @@ export class DocumentImportsService {
   async get(importId: string): Promise<DocumentImportRecord | null> {
     let record: DocumentImportRecord | null;
     if (!this.database.importJobsEnabled) record = this.imports.get(importId) ?? null;
-    else {
-      const rows = await this.database.query<Record<string, unknown>>('SELECT * FROM document_imports WHERE import_id=?', [importId]);
-      record = rows[0] ? mapImport(rows[0]) : null;
-    }
+    else record = await this.repository.findById(importId);
     return record ? this.withAssets(record) : null;
   }
 
@@ -146,22 +137,14 @@ export class DocumentImportsService {
     job: IndexJobRecord;
   }> {
     if (this.database.metadataEnabled && this.database.indexJobsEnabled && this.database.importJobsEnabled) {
-      const ids = await this.database.source.transaction(async (manager) => {
-        const importRows = await manager.query(
-          'SELECT * FROM document_imports WHERE import_id=? FOR UPDATE',
-          [importId],
-        ) as Record<string, unknown>[];
-        if (!importRows[0]) throw new NotFoundException('Document import not found.');
-        const record = mapImport(importRows[0]);
+      const ids = await this.database.transaction(async (manager) => {
+        const record = await this.repository.lockImport(manager, importId);
+        if (!record) throw new NotFoundException('Document import not found.');
         this.assertOwner(record, context);
         if (record.status === 'confirmed' && record.document_id) {
-          const confirmedDocuments = await manager.query(
-            'SELECT latest_index_job_id FROM knowledge_documents WHERE doc_id=?',
-            [record.document_id],
-          ) as Array<{ latest_index_job_id: string | null }>;
           return {
             docId: record.document_id,
-            jobId: confirmedDocuments[0]?.latest_index_job_id ?? null,
+            jobId: await this.repository.latestDocumentJobId(manager, record.document_id),
           };
         }
         if (record.status !== 'review_ready') {
@@ -172,18 +155,11 @@ export class DocumentImportsService {
         }
 
         const docId = `import_${record.import_id}`;
-        const assetRows = await manager.query(
-          'SELECT * FROM document_assets WHERE import_id=? ORDER BY COALESCE(ordinal, 0), created_at FOR UPDATE',
-          [importId],
-        ) as Record<string, unknown>[];
-        const assets = assetRows.map(mapAssetRow);
-        const documentRows = await manager.query(
-          'SELECT * FROM knowledge_documents WHERE doc_id=? FOR UPDATE',
-          [docId],
-        ) as Record<string, unknown>[];
+        const assets = await this.repository.lockAssets(manager, importId);
+        const existingDocument = await this.repository.lockDocument(manager, docId);
         let document: DocumentRecord;
-        if (documentRows[0]) {
-          document = mapDocumentRow(documentRows[0]);
+        if (existingDocument) {
+          document = existingDocument;
           if (document.source_import_id !== importId) {
             throw new ConflictException('Import document id is already owned by another source.');
           }
@@ -214,77 +190,52 @@ export class DocumentImportsService {
             created_at: now,
             updated_at: now,
           };
-          await manager.query(
-            `INSERT INTO knowledge_documents
-              (doc_id,space_id,title,content,visibility,source_type,tags,team_id,owner_id,url,
-               editor_content,source_import_id,document_version,index_status,chunk_count,created_at,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?, ?,1,'pending',0,?,?)`,
-            [
-              document.doc_id, document.space_id, document.title, document.content,
-              document.visibility, document.source_type, JSON.stringify(document.tags),
-              document.team_id, document.owner_id, document.url,
-              document.editor_content == null ? null : JSON.stringify(document.editor_content),
-              document.source_import_id, now, now,
-            ],
-          );
+          await this.repository.insertDocument(manager, document);
         }
 
-        let jobRows: Record<string, unknown>[] = [];
-        if (document.latest_index_job_id) {
-          jobRows = await manager.query('SELECT * FROM index_jobs WHERE job_id=?', [document.latest_index_job_id]);
-        }
-        if (!jobRows[0]) {
-          jobRows = await manager.query(
-            'SELECT * FROM index_jobs WHERE dedupe_key=? LIMIT 1 FOR UPDATE',
-            [`${docId}:${document.document_version}`],
-          );
-        }
-        let jobId = jobRows[0] ? String(jobRows[0].job_id) : '';
+        const dedupeKey = `${docId}:${document.document_version}`;
+        let jobId = await this.repository.findIndexJobId(
+          manager,
+          document.latest_index_job_id,
+          dedupeKey,
+        );
         if (!jobId) {
-          const generationRows = await manager.query(
-            `SELECT COALESCE(MAX(generation),0) AS generation FROM index_jobs
-             WHERE doc_id=? AND document_version=?`,
-            [docId, document.document_version],
-          ) as Array<{ generation: number | string }>;
           const now = new Date();
           jobId = randomUUID().replaceAll('-', '');
-          const request = {
-            ...toIndexRequest(document),
-            content: buildIndexContent(document.content, assets),
+          const job: IndexJobRecord = {
+            job_id: jobId,
+            doc_id: docId,
+            document_version: document.document_version,
+            generation: await this.repository.nextIndexGeneration(
+              manager,
+              docId,
+              document.document_version,
+            ),
+            status: 'queued',
+            attempts: 0,
+            max_attempts: this.config.indexJobMaxAttempts,
+            requested_by: context.user_id,
+            space_id: context.space_id,
+            request_payload: {
+              ...toIndexRequest(document),
+              content: buildIndexContent(document.content, assets),
+            },
+            config_fingerprint: this.config.configFingerprint,
+            dedupe_key: dedupeKey,
+            worker_id: null,
+            lease_expires_at: null,
+            next_run_at: now,
+            error: null,
+            created_at: now,
+            started_at: null,
+            finished_at: null,
+            updated_at: now,
           };
-          await manager.query(
-            `INSERT INTO index_jobs
-              (job_id,doc_id,document_version,generation,status,attempts,max_attempts,
-               requested_by,space_id,request_payload,config_fingerprint,dedupe_key,
-               next_run_at,created_at,updated_at)
-             VALUES (?,?,?,?, 'queued',0,?,?,?,?,?,?, ?,?,?)`,
-            [
-              jobId, docId, document.document_version,
-              Number(generationRows[0]?.generation ?? 0) + 1,
-              this.config.indexJobMaxAttempts, context.user_id, context.space_id,
-              JSON.stringify(request), this.config.configFingerprint,
-              `${docId}:${document.document_version}`, now, now, now,
-            ],
-          );
+          await this.repository.insertIndexJob(manager, job);
         }
 
         const now = new Date();
-        await manager.query(
-          `UPDATE knowledge_documents SET index_status='queued',latest_index_job_id=?,
-           index_error=NULL,updated_at=? WHERE doc_id=?`,
-          [jobId, now, docId],
-        );
-        if (assets.length) {
-          await manager.query(
-            `UPDATE document_assets SET doc_id=? WHERE asset_id IN (${assets.map(() => '?').join(',')})`,
-            [docId, ...assets.map((asset) => asset.asset_id)],
-          );
-        }
-        await manager.query(
-          `UPDATE document_imports SET status='confirmed',stage=?,document_id=?,progress=100,
-           error=NULL,updated_at=? WHERE import_id=?`,
-          ['已保存到知识库', docId, now, importId],
-        );
+        await this.repository.confirm(manager, importId, docId, jobId, assets, now);
         return { docId, jobId };
       });
       if (!ids.jobId) throw new ConflictException('Confirmed import has no index job.');
@@ -351,13 +302,7 @@ export class DocumentImportsService {
     const current = await this.require(importId);
     const next = { ...current, ...values, assets: undefined, updated_at: new Date() };
     if (this.database.importJobsEnabled) {
-      const entries = Object.entries(values).filter(([key]) => key !== 'assets');
-      if (entries.length) {
-        await this.database.query(
-          `UPDATE document_imports SET ${entries.map(([key]) => `${key}=?`).join(',')}, updated_at=? WHERE import_id=?`,
-          [...entries.map(([key, value]) => key === 'editor_content' && value != null ? JSON.stringify(value) : value), next.updated_at, importId],
-        );
-      }
+      await this.repository.patch(importId, values, next.updated_at);
     } else this.imports.set(importId, next);
     return this.withAssets(next);
   }
@@ -368,11 +313,7 @@ export class DocumentImportsService {
     const generation = await this.nextGeneration(importId);
     const job = this.makeJob(importId, context, generation, new Date());
     if (this.database.importJobsEnabled) {
-      await this.database.query(
-        `INSERT INTO document_import_jobs
-         (job_id,import_id,status,attempts,max_attempts,generation,requested_by,space_id,config_fingerprint,worker_id,
-          lease_expires_at,next_run_at,error,created_at,started_at,finished_at,updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, jobValues(job));
+      await this.repository.insertJob(job);
     } else this.jobs.set(job.job_id, job);
     return this.patch(importId, { status: 'queued', stage: '等待解析', progress: 5, error: null, latest_job_id: job.job_id });
   }
@@ -416,7 +357,7 @@ export class DocumentImportsService {
     }
     await this.assets.removeWhere({ import_id: importId });
     if (this.database.importJobsEnabled) {
-      await this.database.query('DELETE FROM document_imports WHERE import_id=?', [importId]);
+      await this.repository.delete(importId);
     } else {
       this.imports.delete(importId);
     }
@@ -431,7 +372,7 @@ export class DocumentImportsService {
     const cutoff = new Date(Date.now() - this.config.importRetentionDays * 86400_000);
     const ids = !this.database.importJobsEnabled
       ? [...this.imports.values()].filter((item) => item.status !== 'confirmed' && item.updated_at < cutoff).map((item) => item.import_id)
-      : (await this.database.query<{ import_id: string }>("SELECT import_id FROM document_imports WHERE status<>'confirmed' AND updated_at<?", [cutoff])).map((row) => row.import_id);
+      : await this.repository.listExpiredIds(cutoff);
     for (const id of ids) await this.remove(id);
     return ids.length;
   }
@@ -463,8 +404,7 @@ export class DocumentImportsService {
 
   private async nextGeneration(importId: string): Promise<number> {
     if (!this.database.importJobsEnabled) return Math.max(0, ...[...this.jobs.values()].filter((job)=>job.import_id===importId).map((job)=>job.generation)) + 1;
-    const rows = await this.database.query<{ generation: number }>('SELECT COALESCE(MAX(generation),0) AS generation FROM document_import_jobs WHERE import_id=?', [importId]);
-    return Number(rows[0]?.generation ?? 0) + 1;
+    return this.repository.nextGeneration(importId);
   }
 
   private async finishJob(job: ImportJobRecord, status: ImportJobRecord['status'], error: string | null, nextRunAt = job.next_run_at): Promise<void> {
@@ -498,10 +438,3 @@ export function safeFilename(filename: string): string {
   if (!safe || safe === '.' || safe === '..') throw new BadRequestException('Invalid filename.');
   return safe;
 }
-
-function importValues(r: DocumentImportRecord): unknown[] { return [r.import_id,r.space_id,r.owner_id,r.visibility,r.team_id,JSON.stringify(r.tags),r.folder,r.title,r.filename,r.mime_type,r.file_size,r.sha256,r.source_asset_id,r.status,r.progress,r.stage,r.parsed_content,r.editor_content == null ? null : JSON.stringify(r.editor_content),r.parser_version,r.error,r.document_id,r.latest_job_id,r.created_at,r.updated_at]; }
-function jobValues(j: ImportJobRecord): unknown[] { return [j.job_id,j.import_id,j.status,j.attempts,j.max_attempts,j.generation,j.requested_by,j.space_id,j.config_fingerprint,j.worker_id,j.lease_expires_at,j.next_run_at,j.error,j.created_at,j.started_at,j.finished_at,j.updated_at]; }
-function parseJsonObject(v: unknown): Record<string,unknown>|null { if(v&&typeof v==='object'&&!Array.isArray(v)) return v as Record<string,unknown>; if(typeof v!=='string') return null; try{return JSON.parse(v) as Record<string,unknown>;}catch{return null;} }
-function parseTags(v: unknown): string[] { if(Array.isArray(v))return v.map(String); if(typeof v==='string')try{const p=JSON.parse(v) as unknown;return Array.isArray(p)?p.map(String):[];}catch{return [];} return []; }
-function mapImport(r: Record<string,unknown>): DocumentImportRecord { return { import_id:String(r.import_id),space_id:String(r.space_id),owner_id:String(r.owner_id),visibility:r.visibility as Visibility,team_id:r.team_id==null?null:String(r.team_id),tags:parseTags(r.tags),folder:r.folder==null?null:String(r.folder),title:String(r.title),filename:String(r.filename),mime_type:String(r.mime_type),file_size:Number(r.file_size),sha256:String(r.sha256),source_asset_id:String(r.source_asset_id),status:r.status as DocumentImportRecord['status'],progress:Number(r.progress),stage:String(r.stage),parsed_content:String(r.parsed_content??''),editor_content:parseJsonObject(r.editor_content),parser_version:r.parser_version==null?null:String(r.parser_version),error:r.error==null?null:String(r.error),document_id:r.document_id==null?null:String(r.document_id),latest_job_id:r.latest_job_id==null?null:String(r.latest_job_id),created_at:new Date(r.created_at as string|Date),updated_at:new Date(r.updated_at as string|Date)}; }
-function mapJob(r: Record<string,unknown>): ImportJobRecord { return { job_id:String(r.job_id),import_id:String(r.import_id),status:r.status as ImportJobRecord['status'],attempts:Number(r.attempts),max_attempts:Number(r.max_attempts),generation:Number(r.generation),requested_by:String(r.requested_by),space_id:String(r.space_id),config_fingerprint:String(r.config_fingerprint??''),worker_id:r.worker_id==null?null:String(r.worker_id),lease_expires_at:r.lease_expires_at==null?null:new Date(r.lease_expires_at as string|Date),next_run_at:new Date(r.next_run_at as string|Date),error:r.error==null?null:String(r.error),created_at:new Date(r.created_at as string|Date),started_at:r.started_at==null?null:new Date(r.started_at as string|Date),finished_at:r.finished_at==null?null:new Date(r.finished_at as string|Date),updated_at:new Date(r.updated_at as string|Date)}; }

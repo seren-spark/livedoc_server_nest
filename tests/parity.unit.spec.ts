@@ -184,9 +184,10 @@ describe('Python 34-test parity - unit and structural checks', () => {
   });
 
   test('MySQL queue claim uses a transaction and SKIP LOCKED', () => {
-    const source = readFileSync(resolve('src/indexing/index-jobs.service.ts'), 'utf8');
+    const source = readFileSync(resolve('src/jobs/persistent-job-store.ts'), 'utf8');
     expect(source).toContain('FOR UPDATE SKIP LOCKED');
-    expect(source).toContain('startTransaction');
+    expect(source).toContain('database.transaction');
+    expect(source).not.toContain('createQueryRunner');
   });
 
   test('persistent trace schema binds trace ownership to user and space', () => {

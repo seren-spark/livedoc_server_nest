@@ -3,7 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../src/app.module.js';
 import { AppConfig } from '../src/config/app-config.js';
 import { DatabaseService } from '../src/database/database.service.js';
-import { DocumentMemoryJobsService } from '../src/documents/document-memory-jobs.service.js';
+import { DocumentMemoryJobsService } from '../src/documents/document-memory/document-memory-jobs.service.js';
 import { DocumentsService } from '../src/documents/documents.service.js';
 
 const batchArg = process.argv.find((value) => value.startsWith('--batch-size='));

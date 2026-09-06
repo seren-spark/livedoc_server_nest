@@ -45,8 +45,8 @@ export const REQUIRED_SCHEMA_COLUMNS = {
     'user_content', 'assistant_content', 'created_at', 'expires_at',
   ],
   document_memory_profiles: [
-    'doc_id', 'space_id', 'source_document_version', 'memory_version', 'status',
-    'glossary', 'style_tags', 'global_settings', 'suppressed_keys',
+    'doc_id', 'space_id', 'source_document_version', 'status',
+    'glossary', 'style_tags', 'global_settings',
     'source_chunk_hashes', 'last_error', 'created_at', 'updated_at',
   ],
   document_memory_jobs: [

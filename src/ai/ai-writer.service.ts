@@ -16,7 +16,7 @@ import { DocumentSummaryService } from "./document-summary.service.js";
 import { LlmService } from "./llm.service.js";
 import { ConversationMemoryService } from "./memory.service.js";
 import { DocumentsService } from '../documents/documents.service.js';
-import { DocumentMemoryService } from '../documents/document-memory.service.js';
+import { DocumentMemoryService } from '../documents/document-memory/document-memory.service.js';
 
 export const NO_EVIDENCE_MESSAGE = "知识库未查询到相关依据，无法作答";
 const EDITOR_INTENTS = new Set<WriteIntent>([

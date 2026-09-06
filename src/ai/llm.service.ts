@@ -1,7 +1,8 @@
 import { Injectable, ServiceUnavailableException } from "@nestjs/common";
 import type { AiWriteDto } from "../common/dto.js";
 import { AppConfig } from "../config/app-config.js";
-import type { ExtractedDocumentMemory } from '../documents/document-memory.types.js';
+import type { ExtractedDocumentMemory } from '../documents/document-memory/document-memory.types.js';
+import { createLlmTool, LlmToolName } from './llm-tools.js';
 
 @Injectable()
 export class LlmService {
@@ -138,24 +139,8 @@ export class LlmService {
     context: string,
     maxVariants: number,
   ): Promise<string[]> {
-    const tool = {
-      type: "function",
-      function: {
-        name: "expand_search_queries",
-        description: "生成保持原意的检索查询变体。",
-        parameters: {
-          type: "object",
-          properties: {
-            queries: {
-              type: "array",
-              items: { type: "string" },
-              maxItems: maxVariants,
-            },
-          },
-          required: ["queries"],
-        },
-      },
-    };
+    const toolName = LlmToolName.ExpandSearchQueries;
+    const tool = createLlmTool[toolName](maxVariants);
     const data = await this.request({
       ...this.config.llmToolCallExtraBody,
       model: this.config.llmModel,
@@ -173,7 +158,7 @@ export class LlmService {
       tools: [tool],
       tool_choice: {
         type: "function",
-        function: { name: "expand_search_queries" },
+        function: { name: toolName },
       },
       temperature: 0,
       stream: false,
@@ -191,60 +176,8 @@ export class LlmService {
     chunks: Array<{ hash: string; anchor: string; content: string }>,
   ): Promise<ExtractedDocumentMemory> {
     const hashes = chunks.map((chunk) => chunk.hash);
-    const confidence = { type: 'number', minimum: 0, maximum: 1 };
-    const evidenceHashes = {
-      type: 'array',
-      items: { type: 'string', enum: hashes },
-      maxItems: 3,
-    };
-    const tool = {
-      type: 'function',
-      function: {
-        name: 'record_document_memory',
-        description: '从文档证据中提取可长期复用的结构化记忆。',
-        parameters: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            glossary: {
-              type: 'array', maxItems: 30,
-              items: {
-                type: 'object', additionalProperties: false,
-                properties: {
-                  term: { type: 'string' }, definition: { type: 'string' },
-                  aliases: { type: 'array', items: { type: 'string' }, maxItems: 10 },
-                  evidence_hashes: evidenceHashes, confidence,
-                },
-                required: ['term', 'definition', 'aliases', 'evidence_hashes', 'confidence'],
-              },
-            },
-            style_tags: {
-              type: 'array', maxItems: 8,
-              items: {
-                type: 'object', additionalProperties: false,
-                properties: {
-                  label: { type: 'string' }, instruction: { type: 'string' },
-                  evidence_hashes: evidenceHashes, confidence,
-                },
-                required: ['label', 'instruction', 'evidence_hashes', 'confidence'],
-              },
-            },
-            global_settings: {
-              type: 'array', maxItems: 20,
-              items: {
-                type: 'object', additionalProperties: false,
-                properties: {
-                  key: { type: 'string' }, value: { type: 'string' },
-                  evidence_hashes: evidenceHashes, confidence,
-                },
-                required: ['key', 'value', 'evidence_hashes', 'confidence'],
-              },
-            },
-          },
-          required: ['glossary', 'style_tags', 'global_settings'],
-        },
-      },
-    };
+    const toolName = LlmToolName.RecordDocumentMemory;
+    const tool = createLlmTool[toolName](hashes);
     const data = await this.request({
       ...this.config.llmToolCallExtraBody,
       model: this.config.llmModel,
@@ -257,12 +190,14 @@ export class LlmService {
         { role: 'user', content: JSON.stringify({ chunks }) },
       ],
       tools: [tool],
-      tool_choice: { type: 'function', function: { name: 'record_document_memory' } },
+      tool_choice: { type: 'function', function: { name: toolName } },
       temperature: 0,
       stream: false,
     });
+    //拿到的json格式
     const raw = data.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
     if (!raw) throw new Error('Document memory extractor did not return a tool call');
+    //解析json
     const parsed = JSON.parse(raw) as Partial<ExtractedDocumentMemory>;
     return {
       glossary: Array.isArray(parsed.glossary) ? parsed.glossary : [],

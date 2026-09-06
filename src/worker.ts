@@ -4,7 +4,7 @@ import { hostname } from 'node:os';
 import { AppModule } from './app.module.js';
 import { AppConfig } from './config/app-config.js';
 import { IndexWorkerService } from './indexing/index-worker.service.js';
-import { DocumentMemoryWorkerService } from './documents/document-memory-worker.service.js';
+import { DocumentMemoryWorkerService } from './documents/document-memory/document-memory-worker.service.js';
 
 const app = await NestFactory.createApplicationContext(AppModule);
 const config = app.get(AppConfig);

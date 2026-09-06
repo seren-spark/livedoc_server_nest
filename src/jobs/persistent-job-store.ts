@@ -80,11 +80,8 @@ export class PersistentJobStore<TJob extends PersistentJobRecord> {
       return claimed;
     }
 
-    const runner = this.options.database.source.createQueryRunner();
-    await runner.connect();
-    await runner.startTransaction();
-    try {
-      const rows = (await runner.query(
+    const jobId = await this.options.database.transaction(async (manager) => {
+      const rows = (await manager.query(
         `SELECT * FROM ${this.options.tableName}
          WHERE
            (status IN ('queued','retry_wait') AND (next_run_at IS NULL OR next_run_at <= ?))
@@ -93,25 +90,17 @@ export class PersistentJobStore<TJob extends PersistentJobRecord> {
         [now, now],
       )) as Record<string, unknown>[];
       const row = rows[0];
-      if (!row) {
-        await runner.commitTransaction();
-        return null;
-      }
+      if (!row) return null;
       const lease = new Date(now.getTime() + this.options.leaseSeconds() * 1000);
-      await runner.query(
+      await manager.query(
         `UPDATE ${this.options.tableName} SET status='running', attempts=attempts+1,
          worker_id=?, started_at=COALESCE(started_at, ?), lease_expires_at=?,
          updated_at=? WHERE job_id=?`,
         [workerId, now, lease, now, row.job_id],
       );
-      await runner.commitTransaction();
-      return this.get(String(row.job_id));
-    } catch (error) {
-      await runner.rollbackTransaction();
-      throw error;
-    } finally {
-      await runner.release();
-    }
+      return String(row.job_id);
+    });
+    return jobId ? this.get(jobId) : null;
   }
 
   async heartbeat(

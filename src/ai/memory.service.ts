@@ -4,30 +4,27 @@ import { getEncoding, type Tiktoken } from 'js-tiktoken';
 import type { AccessContext } from '../common/types.js';
 import { AppConfig } from '../config/app-config.js';
 import { DatabaseService } from '../database/database.service.js';
+import {
+  ConversationMemoryRepository,
+  type ConversationTurnRow,
+  type LegacyMessageRow,
+} from './conversation-memory.repository.js';
 
-interface ConversationTurn {
-  turn_id: string;
-  user_content: string;
-  assistant_content: string;
-  created_at: Date;
-}
-
-interface LegacyMessage {
-  role: string;
-  content: string;
-  created_at: Date;
-}
+type ConversationTurn = ConversationTurnRow;
+type LegacyMessage = LegacyMessageRow;
 
 @Injectable()
 export class ConversationMemoryService {
   private readonly turns = new Map<string, ConversationTurn[]>();
   private readonly legacyMessages = new Map<string, LegacyMessage[]>();
   private readonly tokenizer: Tiktoken;
+  private readonly repository: ConversationMemoryRepository;
 
   constructor(
     private readonly config: AppConfig,
     private readonly database: DatabaseService,
   ) {
+    this.repository = new ConversationMemoryRepository(database);
     this.tokenizer = getEncoding(
       this.config.tokenizerEncoding as Parameters<typeof getEncoding>[0],
     );
@@ -48,30 +45,16 @@ export class ConversationMemoryService {
       created_at: now,
     };
     if (this.database.memoryEnabled) {
-      await this.database.source.transaction(async (manager) => {
-        await manager.query('DELETE FROM conversation_turns WHERE expires_at <= UTC_TIMESTAMP(6)');
-        await manager.query(
-          `INSERT INTO conversation_turns
-            (turn_id,conversation_id,user_id,space_id,doc_id,user_content,
-             assistant_content,created_at,expires_at)
-           VALUES (?,?,?,?,?,?,?,?,?)`,
-          [turn.turn_id, conversationId, context.user_id, context.space_id, docId ?? null,
-            userContent, assistantContent, now,
-            new Date(now.getTime() + this.config.memoryTtlDays * 86_400_000)],
-        );
-        const rows = (await manager.query(
-          `SELECT turn_id FROM conversation_turns
-           WHERE conversation_id=? AND user_id=? AND space_id=? AND ${docId ? 'doc_id=?' : 'doc_id IS NULL'}
-           ORDER BY created_at DESC`,
-          [conversationId, context.user_id, context.space_id, ...(docId ? [docId] : [])],
-        )) as Array<{ turn_id: string }>;
-        const stale = rows.slice(this.config.memoryMaxTurns).map((row) => row.turn_id);
-        if (stale.length) {
-          await manager.query(
-            `DELETE FROM conversation_turns WHERE turn_id IN (${stale.map(() => '?').join(',')})`,
-            stale,
-          );
-        }
+      await this.repository.addTurn({
+        turnId: turn.turn_id,
+        conversationId,
+        userContent,
+        assistantContent,
+        context,
+        docId,
+        now,
+        expiresAt: new Date(now.getTime() + this.config.memoryTtlDays * 86_400_000),
+        maxTurns: this.config.memoryMaxTurns,
       });
       return;
     }
@@ -87,15 +70,12 @@ export class ConversationMemoryService {
     if (!conversationId) return '';
     let turns: ConversationTurn[] = [];
     if (this.database.memoryEnabled) {
-      const rows = await this.database.query<ConversationTurn>(
-        `SELECT turn_id,user_content,assistant_content,created_at FROM conversation_turns
-         WHERE conversation_id=? AND user_id=? AND space_id=? AND ${docId ? 'doc_id=?' : 'doc_id IS NULL'}
-           AND expires_at>UTC_TIMESTAMP(6)
-         ORDER BY created_at DESC LIMIT ?`,
-        [conversationId, context.user_id, context.space_id,
-          ...(docId ? [docId] : []), this.config.memoryMaxTurns],
+      turns = await this.repository.recentTurns(
+        conversationId,
+        context,
+        docId,
+        this.config.memoryMaxTurns,
       );
-      turns = rows.reverse().map((row) => ({ ...row, created_at: new Date(row.created_at) }));
     } else turns = this.turns.get(memoryKey(conversationId, context, docId)) ?? [];
     if (!turns.length) return this.legacyRecentText(conversationId, context);
     return this.fitCompleteTurns(turns);
@@ -103,7 +83,7 @@ export class ConversationMemoryService {
 
   async deleteDocument(docId: string): Promise<void> {
     if (this.database.memoryEnabled) {
-      await this.database.query('DELETE FROM conversation_turns WHERE doc_id=?', [docId]);
+      await this.repository.deleteDocument(docId);
       return;
     }
     for (const key of this.turns.keys()) if (key.endsWith(`:${docId}`)) this.turns.delete(key);
@@ -113,13 +93,15 @@ export class ConversationMemoryService {
   async add(conversationId: string, role: string, content: string, context: AccessContext): Promise<void> {
     const now = new Date();
     if (this.database.memoryEnabled) {
-      await this.database.query(
-        `INSERT INTO conversation_messages
-          (message_id,conversation_id,user_id,space_id,role,content,created_at,expires_at)
-         VALUES (?,?,?,?,?,?,?,?)`,
-        [randomUUID().replaceAll('-', ''), conversationId, context.user_id, context.space_id,
-          role, content, now, new Date(now.getTime() + this.config.memoryTtlDays * 86_400_000)],
-      );
+      await this.repository.addLegacyMessage({
+        messageId: randomUUID().replaceAll('-', ''),
+        conversationId,
+        context,
+        role,
+        content,
+        now,
+        expiresAt: new Date(now.getTime() + this.config.memoryTtlDays * 86_400_000),
+      });
       return;
     }
     const key = legacyMemoryKey(conversationId, context);
@@ -146,13 +128,11 @@ export class ConversationMemoryService {
   private async legacyRecentText(conversationId: string, context: AccessContext): Promise<string> {
     let items: LegacyMessage[];
     if (this.database.memoryEnabled) {
-      const rows = await this.database.query<LegacyMessage>(
-        `SELECT role,content,created_at FROM conversation_messages
-         WHERE conversation_id=? AND user_id=? AND space_id=? AND expires_at>UTC_TIMESTAMP(6)
-         ORDER BY created_at DESC LIMIT ?`,
-        [conversationId, context.user_id, context.space_id, this.config.memoryMaxMessages],
+      items = await this.repository.recentLegacyMessages(
+        conversationId,
+        context,
+        this.config.memoryMaxMessages,
       );
-      items = rows.reverse();
     } else items = this.legacyMessages.get(legacyMemoryKey(conversationId, context)) ?? [];
     return items.map((item) => `${item.role}: ${item.content}`).join('\n');
   }

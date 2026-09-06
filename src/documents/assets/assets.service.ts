@@ -1,18 +1,22 @@
 import { ForbiddenException, Inject, Injectable, NotFoundException, UnsupportedMediaTypeException } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
-import type { AccessContext } from '../common/types.js';
-import { DatabaseService } from '../database/database.service.js';
-import { BLOB_STORAGE, type BlobStorage } from '../storage/blob-storage.js';
+import type { AccessContext } from '../../common/types.js';
+import { DatabaseService } from '../../database/database.service.js';
+import { BLOB_STORAGE, type BlobStorage } from '../../storage/blob-storage.js';
 import type { DocumentAssetRecord } from './asset.types.js';
+import { AssetsRepository } from './assets.repository.js';
 
 @Injectable()
 export class AssetsService {
   private readonly records = new Map<string, DocumentAssetRecord>();
+  private readonly repository: AssetsRepository;
 
   constructor(
     private readonly database: DatabaseService,
     @Inject(BLOB_STORAGE) private readonly blobs: BlobStorage,
-  ) {}
+  ) {
+    this.repository = new AssetsRepository(database);
+  }
 
   async create(input: Omit<DocumentAssetRecord, 'asset_id' | 'content_url' | 'created_at'> & { asset_id?: string }): Promise<DocumentAssetRecord> {
     const asset: DocumentAssetRecord = {
@@ -23,18 +27,7 @@ export class AssetsService {
     };
     asset.content_url = `/assets/${asset.asset_id}/content`;
     if (this.database.importJobsEnabled) {
-      await this.database.query(
-        `INSERT INTO document_assets
-         (asset_id, space_id, owner_id, import_id, doc_id, kind, filename, mime_type,
-          byte_size, sha256, storage_key, page_number, ordinal, width, height, ocr_text,
-          description, analysis_status, analysis_error, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [asset.asset_id, asset.space_id, asset.owner_id, asset.import_id, asset.doc_id,
-          asset.kind, asset.filename, asset.mime_type, asset.byte_size, asset.sha256,
-          asset.storage_key, asset.page_number, asset.ordinal, asset.width, asset.height,
-          asset.ocr_text, asset.description, asset.analysis_status, asset.analysis_error,
-          asset.created_at],
-      );
+      await this.repository.insert(asset);
     } else this.records.set(asset.asset_id, asset);
     return asset;
   }
@@ -62,8 +55,7 @@ export class AssetsService {
 
   async get(assetId: string): Promise<DocumentAssetRecord | null> {
     if (!this.database.importJobsEnabled) return this.records.get(assetId) ?? null;
-    const rows = await this.database.query<Record<string, unknown>>('SELECT * FROM document_assets WHERE asset_id=?', [assetId]);
-    return rows[0] ? mapAssetRow(rows[0]) : null;
+    return this.repository.findById(assetId);
   }
 
   async require(assetId: string): Promise<DocumentAssetRecord> {
@@ -78,11 +70,7 @@ export class AssetsService {
         (filter.import_id === undefined || item.import_id === filter.import_id) &&
         (filter.doc_id === undefined || item.doc_id === filter.doc_id));
     }
-    const field = filter.import_id !== undefined ? 'import_id' : 'doc_id';
-    const value = filter.import_id ?? filter.doc_id;
-    const rows = await this.database.query<Record<string, unknown>>(
-      `SELECT * FROM document_assets WHERE ${field}=? ORDER BY COALESCE(ordinal, 0), created_at`, [value]);
-    return rows.map(mapAssetRow);
+    return this.repository.list(filter);
   }
 
   assertOwner(asset: DocumentAssetRecord, context: AccessContext): void {
@@ -95,7 +83,7 @@ export class AssetsService {
     for (const id of new Set(assetIds)) this.assertOwner(await this.require(id), context);
     if (!assetIds.length) return;
     if (this.database.importJobsEnabled) {
-      await this.database.query(`UPDATE document_assets SET doc_id=? WHERE asset_id IN (${assetIds.map(() => '?').join(',')})`, [docId, ...assetIds]);
+      await this.repository.link(assetIds, docId);
     } else {
       for (const id of assetIds) this.records.set(id, { ...(await this.require(id)), doc_id: docId });
     }
@@ -105,10 +93,7 @@ export class AssetsService {
     const current = await this.require(assetId);
     const next = { ...current, ...values };
     if (this.database.importJobsEnabled) {
-      await this.database.query(
-        'UPDATE document_assets SET description=?,analysis_status=?,analysis_error=? WHERE asset_id=?',
-        [next.description, next.analysis_status, next.analysis_error, assetId],
-      );
+      await this.repository.updateAnalysis(assetId, next);
     } else this.records.set(assetId, next);
     return next;
   }
@@ -141,7 +126,7 @@ export class AssetsService {
     const ids = assets.map((item) => item.asset_id);
     if (!ids.length) return;
     if (this.database.importJobsEnabled) {
-      await this.database.query(`DELETE FROM document_assets WHERE asset_id IN (${ids.map(() => '?').join(',')})`, ids);
+      await this.repository.delete(ids);
     } else for (const id of ids) this.records.delete(id);
   }
 
@@ -162,18 +147,4 @@ function detectImage(data: Buffer, declared: string): { mime: string; extension:
     throw new UnsupportedMediaTypeException('Image MIME type does not match its bytes.');
   }
   return detected;
-}
-
-export function mapAssetRow(row: Record<string, unknown>): DocumentAssetRecord {
-  return {
-    asset_id: String(row.asset_id), space_id: String(row.space_id), owner_id: String(row.owner_id),
-    import_id: row.import_id == null ? null : String(row.import_id), doc_id: row.doc_id == null ? null : String(row.doc_id),
-    kind: row.kind as DocumentAssetRecord['kind'], filename: String(row.filename), mime_type: String(row.mime_type),
-    byte_size: Number(row.byte_size), sha256: String(row.sha256), storage_key: String(row.storage_key),
-    content_url: `/assets/${String(row.asset_id)}/content`, page_number: row.page_number == null ? null : Number(row.page_number),
-    ordinal: row.ordinal == null ? null : Number(row.ordinal), width: row.width == null ? null : Number(row.width),
-    height: row.height == null ? null : Number(row.height), ocr_text: String(row.ocr_text ?? ''),
-    description: String(row.description ?? ''), analysis_status: row.analysis_status as DocumentAssetRecord['analysis_status'],
-    analysis_error: row.analysis_error == null ? null : String(row.analysis_error), created_at: new Date(row.created_at as string | Date),
-  };
 }

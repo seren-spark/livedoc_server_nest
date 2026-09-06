@@ -1,5 +1,5 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { DataSource, type EntityManager } from 'typeorm';
 import { AppConfig } from '../config/app-config.js';
 import { CURRENT_SCHEMA_VERSION } from './migration-version.js';
 import { formatSchemaProblems, inspectSchemaContract } from './schema-contract.js';
@@ -69,6 +69,10 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
     if (!this.dataSource) throw new Error('MySQL store is not enabled');
     return (await this.dataSource.query(sql, params)) as T[];
+  }
+
+  async transaction<T>(work: (manager: EntityManager) => Promise<T>): Promise<T> {
+    return this.source.transaction(work);
   }
 
   get source(): DataSource {
@@ -191,9 +195,9 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       `CREATE TABLE IF NOT EXISTS document_memory_profiles (
         doc_id VARCHAR(128) PRIMARY KEY, space_id VARCHAR(128) NOT NULL,
         source_document_version INT NOT NULL DEFAULT 0,
-        memory_version INT NOT NULL DEFAULT 0, status VARCHAR(32) NOT NULL,
+        status VARCHAR(32) NOT NULL,
         glossary JSON NOT NULL, style_tags JSON NOT NULL,
-        global_settings JSON NOT NULL, suppressed_keys JSON NOT NULL,
+        global_settings JSON NOT NULL,
         source_chunk_hashes JSON NOT NULL, last_error TEXT NULL,
         created_at DATETIME(6) NOT NULL, updated_at DATETIME(6) NOT NULL,
         INDEX ix_memory_profiles_scope (space_id, updated_at)
@@ -235,6 +239,16 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     ];
     for (const statement of statements) await this.query(statement);
+    await this.dropColumnIfExists(
+      'document_memory_profiles',
+      'suppressed_keys',
+      'ALTER TABLE document_memory_profiles DROP COLUMN suppressed_keys',
+    );
+    await this.dropColumnIfExists(
+      'document_memory_profiles',
+      'memory_version',
+      'ALTER TABLE document_memory_profiles DROP COLUMN memory_version',
+    );
     await this.ensureColumn(
       'knowledge_documents',
       'editor_content',
@@ -413,6 +427,15 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       [table, column],
     );
     if (Number(rows[0]?.count ?? 0) === 0) await this.query(alterSql);
+  }
+
+  private async dropColumnIfExists(table: string, column: string, alterSql: string): Promise<void> {
+    const rows = await this.query<{ count: number | string }>(
+      `SELECT COUNT(*) AS count FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+      [table, column],
+    );
+    if (Number(rows[0]?.count ?? 0) > 0) await this.query(alterSql);
   }
 
   private async ensureIndex(table: string, index: string, createSql: string): Promise<void> {

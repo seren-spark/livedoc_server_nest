@@ -84,32 +84,15 @@ describe('Python 34-test parity - Supertest API contracts', () => {
     expect(job.body.status).toBe('queued');
   });
 
-  test('document memory APIs reuse document ACLs and enforce optimistic locking', async () => {
+  test('document memory is not exposed as a user-managed API', async () => {
     const created = await api.post('/documents').set(auth(aliceToken)).send({
       title: '记忆权限文档', content: '# 口径\n\n产品名称统一为 LiveDoc。', index_now: false,
     }).expect(201);
     const memoryUrl = `/documents/${created.body.doc_id}/memory`;
 
-    const pending = await api.get(memoryUrl).set(auth(aliceToken)).expect(200);
-    expect(pending.body).toMatchObject({ status: 'pending', memory_version: 0 });
-    await api.get(memoryUrl).set(auth(bobToken)).expect(403);
-    await api.patch(memoryUrl).set(auth(bobToken)).send({
-      expected_memory_version: 0, glossary: [], style_tags: [], global_settings: [],
-    }).expect(403);
-    await api.post(`${memoryUrl}/refresh`).set(auth(bobToken)).expect(403);
-
-    const updated = await api.patch(memoryUrl).set(auth(aliceToken)).send({
-      expected_memory_version: 0,
-      glossary: [{ term: 'LiveDoc', definition: '智能文档工作台', aliases: [] }],
-      style_tags: [{ label: '技术说明', instruction: '使用简洁、准确的中文。' }],
-      global_settings: [{ key: '产品名', value: '始终写作 LiveDoc。' }],
-    }).expect(200);
-    expect(updated.body.glossary[0]).toMatchObject({ origin: 'user', pinned: true });
-
-    await api.patch(memoryUrl).set(auth(aliceToken)).send({
-      expected_memory_version: 0, glossary: [], style_tags: [], global_settings: [],
-    }).expect(409);
-    await api.post(`${memoryUrl}/refresh`).set(auth(aliceToken)).expect(202);
+    await api.get(memoryUrl).set(auth(aliceToken)).expect(404);
+    await api.patch(memoryUrl).set(auth(aliceToken)).send({}).expect(404);
+    await api.post(`${memoryUrl}/refresh`).set(auth(aliceToken)).expect(404);
     await api.delete(`/documents/${created.body.doc_id}`).set(auth(aliceToken)).expect(200);
   });
 

@@ -6,6 +6,7 @@ import { DatabaseService } from "../database/database.service.js";
 import type { DocumentIndexRequest } from "../documents/document.types.js";
 import { PersistentJobStore } from "../jobs/persistent-job-store.js";
 import type { IndexJobRecord } from "./index-job.types.js";
+import { IndexJobsRepository, mapIndexJob } from "./index-jobs.repository.js";
 
 const ACTIVE: IndexJobStatus[] = ["queued", "running", "retry_wait"];
 
@@ -13,18 +14,20 @@ const ACTIVE: IndexJobStatus[] = ["queued", "running", "retry_wait"];
 export class IndexJobsService {
   private readonly jobs = new Map<string, IndexJobRecord>();
   private readonly store: PersistentJobStore<IndexJobRecord>;
+  private readonly repository: IndexJobsRepository;
 
   constructor(
     private readonly config: AppConfig,
     private readonly database: DatabaseService,
   ) {
+    this.repository = new IndexJobsRepository(database);
     this.store = new PersistentJobStore({
       database: this.database,
       enabled: () => this.database.indexJobsEnabled,
       tableName: "index_jobs",
       leaseSeconds: () => this.config.indexJobLeaseSeconds,
       jobs: this.jobs,
-      mapRow: mapJob,
+      mapRow: mapIndexJob,
       hasDedupeKey: true,
     });
   }
@@ -76,68 +79,7 @@ export class IndexJobsService {
     };
     //判断是否启用 MySQL 任务队列。 indexJobsEnabled 来自 DatabaseService ，如果数据库不可用就走后面的内存 Map 退路。
     if (this.database.indexJobsEnabled) {
-      const runner = this.database.source.createQueryRunner();
-      await runner.connect();
-      await runner.startTransaction();
-      try {
-        //用 SELECT ... FOR UPDATE 锁住 dedupeKey 对应的行。
-        //- 如果数据库里已经有这个 dedupe_key，当前事务会拿到这个行的 写锁 。
-        //- 另一个并发请求同时跑 SELECT ... FOR UPDATE 时，会被阻塞，等当前事务提交或回滚。
-        //- 这是数据库层面的并发控制。
-        const existing = (await runner.query(
-          "SELECT * FROM index_jobs WHERE dedupe_key=? LIMIT 1 FOR UPDATE",
-          [dedupeKey],
-        )) as Record<string, unknown>[];
-        //如果已经存在，说明另一个请求先一步入队了。当前请求直接提交空事务并返回已存在的任务，不再 INSERT。
-        if (existing[0]) {
-          await runner.commitTransaction();
-          return mapJob(existing[0]);
-        }
-        //重新查数据库里的 generation 最大值。为什么要重新查？因为前面 previous 是应用层查的，可能并发里有新任务已经 INSERT 了，数据库里才是最准的。
-        const generations = (await runner.query(
-          `SELECT COALESCE(MAX(generation), 0) AS generation FROM index_jobs
-           WHERE doc_id=? AND document_version=?`,
-          [request.doc_id, request.document_version],
-        )) as Array<{ generation: number | string }>;
-        job.generation = Number(generations[0]?.generation ?? 0) + 1;
-        //真正 INSERT 任务到 index_jobs 表。
-        // 注意 request_payload 是对象，要 JSON.stringify(...) 变成字符串存进去。后面 mapJob 会 JSON.parse 还原。
-        await runner.query(
-          `INSERT INTO index_jobs
-            (job_id, doc_id, document_version, generation, status, attempts, max_attempts,
-             requested_by, space_id, request_payload, config_fingerprint, dedupe_key,
-             next_run_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            job.job_id,
-            job.doc_id,
-            job.document_version,
-            job.generation,
-            job.max_attempts,
-            job.requested_by,
-            job.space_id,
-            JSON.stringify(job.request_payload),
-            job.config_fingerprint,
-            job.dedupe_key,
-            job.next_run_at,
-            now,
-            now,
-          ],
-        );
-
-        //提交事务。此时锁释放，其他并发请求才能继续。
-        await runner.commitTransaction();
-      } catch (error) {
-        await runner.rollbackTransaction();
-        const existing = await this.database.query<Record<string, unknown>>(
-          "SELECT * FROM index_jobs WHERE dedupe_key=? LIMIT 1",
-          [dedupeKey],
-        );
-        if (existing[0]) return mapJob(existing[0]);
-        throw error;
-      } finally {
-        await runner.release();
-      }
+      return this.repository.enqueue(job);
     } else this.jobs.set(job.job_id, job);
     return job;
   }
@@ -215,12 +157,7 @@ export class IndexJobsService {
   private async forDocument(docId: string): Promise<IndexJobRecord[]> {
     if (!this.database.indexJobsEnabled)
       return [...this.jobs.values()].filter((item) => item.doc_id === docId);
-    return (
-      await this.database.query<Record<string, unknown>>(
-        "SELECT * FROM index_jobs WHERE doc_id = ?",
-        [docId],
-      )
-    ).map(mapJob);
+    return this.repository.listByDocument(docId);
   }
 
   private async require(jobId: string): Promise<IndexJobRecord> {
@@ -263,37 +200,4 @@ export class IndexJobsService {
   private configFingerprint(): string {
     return this.config.configFingerprint;
   }
-}
-
-function parsePayload(value: unknown): DocumentIndexRequest {
-  if (typeof value === "string")
-    return JSON.parse(value) as DocumentIndexRequest;
-  return value as DocumentIndexRequest;
-}
-
-function mapJob(row: Record<string, unknown>): IndexJobRecord {
-  const date = (value: unknown) =>
-    value == null ? null : new Date(value as string | number | Date);
-  return {
-    job_id: String(row.job_id),
-    doc_id: String(row.doc_id),
-    document_version: Number(row.document_version),
-    generation: Number(row.generation),
-    status: row.status as IndexJobStatus,
-    attempts: Number(row.attempts),
-    max_attempts: Number(row.max_attempts),
-    requested_by: String(row.requested_by),
-    space_id: String(row.space_id),
-    request_payload: parsePayload(row.request_payload),
-    config_fingerprint: String(row.config_fingerprint),
-    dedupe_key: row.dedupe_key == null ? null : String(row.dedupe_key),
-    worker_id: row.worker_id == null ? null : String(row.worker_id),
-    lease_expires_at: date(row.lease_expires_at),
-    next_run_at: date(row.next_run_at),
-    error: row.error == null ? null : String(row.error),
-    created_at: new Date(row.created_at as string | number | Date),
-    started_at: date(row.started_at),
-    finished_at: date(row.finished_at),
-    updated_at: new Date(row.updated_at as string | number | Date),
-  };
 }

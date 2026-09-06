@@ -45,7 +45,7 @@ describe('document import confirmation', () => {
       metadataEnabled: true,
       indexJobsEnabled: true,
       importJobsEnabled: true,
-      source: { transaction },
+      transaction,
       query: jest.fn(),
     };
     const documents = { require: jest.fn() };

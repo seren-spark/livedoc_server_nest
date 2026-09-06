@@ -28,11 +28,11 @@ import { VectorStoreService } from "../retrieval/vector-store.service.js";
 import { DEMO_DOCUMENTS, isDemoDocumentVisibleTo } from "./demo-data.js";
 import { DocumentsService } from "./documents.service.js";
 import { toIndexRequest } from "./document.types.js";
-import { AssetsService } from './assets.service.js';
-import { publicAsset } from './asset.types.js';
-import { DocumentMemoryJobsService } from './document-memory-jobs.service.js';
-import { DocumentMemoryService } from './document-memory.service.js';
-import { ConversationMemoryService } from '../ai/memory.service.js';
+import { AssetsService } from "./assets/assets.service.js";
+import { publicAsset } from "./assets/asset.types.js";
+import { DocumentMemoryJobsService } from "./document-memory/document-memory-jobs.service.js";
+import { DocumentMemoryService } from "./document-memory/document-memory.service.js";
+import { ConversationMemoryService } from "../ai/memory.service.js";
 
 @Controller()
 export class DocumentsController {
@@ -53,35 +53,36 @@ export class DocumentsController {
   // ③ index_now=true（默认）时调 jobs.enqueue 把任务推入 index_jobs 队列，去重 key 为 doc_id:version
   // ④ 调 markQueued 把文档 index_status 从 pending 改为 queued，并记录 latest_index_job_id
   // ⑤ 返回 202 Accepted 表示请求已受理，但向量索引尚未完成，前端应继续轮询状态变化
-@Post('documents')
-async create(
-  @Body() request: DocumentCreateDto,
-  // 认证层注入 user_id、space_id、team_ids，而不是相信客户端自报。
-  @CurrentAccess() context: AccessContext,
-  //允许设置 201/202，同时仍由 Nest 序列化返回对象。
-  @Res({ passthrough: true }) reply: FastifyReply,
-) {
-  // 先保存正文与权限字段，得到 version=1、status=pending 的记录。
-  const record = await this.documents.create(request, context);
-  await this.queueDocumentMemory(record, context);
-  // 把前端白名单中的资产关联到服务端生成的 doc_id。
-  await this.assets.link(request.asset_ids ?? [], record.doc_id, context);
-  // 调用方明确要求不索引时走同步保存分支。
-  if (!request.index_now) {
-    // 201 表示只创建了知识文档。
-    reply.status(HttpStatus.CREATED);
-    // 返回文档及其公开资产，不创建 IndexJob。
-    return this.withAssets(record);
+  @Post("documents")
+  async create(
+    @Body() request: DocumentCreateDto,
+    // 认证层注入 user_id、space_id、team_ids，而不是相信客户端自报。
+    @CurrentAccess() context: AccessContext,
+    //允许设置 201/202，同时仍由 Nest 序列化返回对象。
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ) {
+    // 先保存正文与权限字段，得到 version=1、status=pending 的记录。
+    const record = await this.documents.create(request, context);
+    //创建一条"文档记忆"任务,形成该文档的"记忆档案"。
+    await this.queueDocumentMemory(record, context);
+    // 把前端白名单中的资产关联到服务端生成的 doc_id。
+    await this.assets.link(request.asset_ids ?? [], record.doc_id, context);
+    // 调用方明确要求不索引时走同步保存分支。
+    if (!request.index_now) {
+      // 201 表示只创建了知识文档。
+      reply.status(HttpStatus.CREATED);
+      // 返回文档及其公开资产，不创建 IndexJob。
+      return this.withAssets(record);
+    }
+    // 把当前 version 的文档固化成 Worker 可独立消费的任务快照。
+    const job = await this.jobs.enqueue(toIndexRequest(record), context);
+    // 记录 queued 状态和 latest_index_job_id。
+    await this.documents.markQueued(record.doc_id, job.job_id);
+    // 202 表示索引任务已接收，但尚未完成。
+    reply.status(HttpStatus.ACCEPTED);
+    // 重新读取 markQueued 后的最新文档，再附加资产返回。
+    return this.withAssets(await this.documents.require(record.doc_id));
   }
-  // 把当前 version 的文档固化成 Worker 可独立消费的任务快照。      
-  const job = await this.jobs.enqueue(toIndexRequest(record), context);
-  // 记录 queued 状态和 latest_index_job_id。
-  await this.documents.markQueued(record.doc_id, job.job_id);
-  // 202 表示索引任务已接收，但尚未完成。
-  reply.status(HttpStatus.ACCEPTED);
-  // 重新读取 markQueued 后的最新文档，再附加资产返回。
-  return this.withAssets(await this.documents.require(record.doc_id));
-}
 
   @Get("documents")
   async list(
@@ -103,7 +104,9 @@ async create(
     );
     return {
       ...result,
-      items: await Promise.all(result.items.map((record) => this.withAssets(record))),
+      items: await Promise.all(
+        result.items.map((record) => this.withAssets(record)),
+      ),
       page: query.page,
       page_size: query.page_size,
     };
@@ -119,7 +122,9 @@ async create(
     );
     return {
       ...result,
-      items: await Promise.all(result.items.map((record) => this.withAssets(record))),
+      items: await Promise.all(
+        result.items.map((record) => this.withAssets(record)),
+      ),
       page: query.page,
       page_size: query.page_size,
     };
@@ -132,7 +137,10 @@ async create(
   }
 
   @Get("documents/:doc_id")
-  async get(@Param("doc_id") docId: string, @CurrentAccess() context: AccessContext) {
+  async get(
+    @Param("doc_id") docId: string,
+    @CurrentAccess() context: AccessContext,
+  ) {
     return this.withAssets(await this.documents.getAccessible(docId, context));
   }
 
@@ -151,7 +159,8 @@ async create(
   ) {
     const before = await this.documents.getWritable(docId, context);
     const updated = await this.documents.update(docId, request, context);
-    if (before.content !== updated.content) await this.queueDocumentMemory(updated, context);
+    if (before.content !== updated.content)
+      await this.queueDocumentMemory(updated, context);
     if (request.asset_ids) {
       await this.assets.link(request.asset_ids, docId, context);
       await this.assets.reconcileDocument(docId, request.asset_ids, context);
@@ -196,7 +205,10 @@ async create(
     const record = await this.documents.getWritable(docId, context);
     const assets = await this.assets.list({ doc_id: docId });
     const job = await this.jobs.enqueue(
-      { ...toIndexRequest(record), content: buildIndexContent(record.content, assets) },
+      {
+        ...toIndexRequest(record),
+        content: buildIndexContent(record.content, assets),
+      },
       context,
       true,
     );
@@ -263,14 +275,19 @@ async create(
         );
         action = "updated";
       }
-      if (action !== 'unchanged') await this.queueDocumentMemory(record, context);
+      if (action !== "unchanged")
+        await this.queueDocumentMemory(record, context);
       let jobId: string | null = null;
       if (
         action !== "unchanged" ||
         record.index_status !== "ready" ||
         record.active_index_version !== record.document_version
       ) {
-        const job = await this.jobs.enqueue(toIndexRequest(record), context, true);
+        const job = await this.jobs.enqueue(
+          toIndexRequest(record),
+          context,
+          true,
+        );
         await this.documents.markQueued(record.doc_id, job.job_id);
         jobId = job.job_id;
       }
@@ -285,19 +302,24 @@ async create(
     return { status: "seeded", documents: seeded };
   }
 
-  private async withAssets(record: Awaited<ReturnType<DocumentsService['require']>>) {
+  private async withAssets(
+    record: Awaited<ReturnType<DocumentsService["require"]>>,
+  ) {
     return {
       ...record,
-      assets: (await this.assets.list({ doc_id: record.doc_id })).map(publicAsset),
+      assets: (await this.assets.list({ doc_id: record.doc_id })).map(
+        publicAsset,
+      ),
     };
   }
 
   private async queueDocumentMemory(
-    record: Awaited<ReturnType<DocumentsService['require']>>,
+    record: Awaited<ReturnType<DocumentsService["require"]>>,
     context: AccessContext,
   ): Promise<void> {
     if (!this.config.documentMemoryEnabled || !record.content.trim()) return;
     try {
+      //把文档记录写入 document_memory_jobs 表，按 doc_id:document_version 去重，旧版本任务标记为 superseded
       await this.memoryJobs.enqueue(record, context);
     } catch (error) {
       await this.documentMemory.markPending(record);
@@ -310,7 +332,7 @@ async create(
 }
 
 function demoDocumentChanged(
-  record: Awaited<ReturnType<DocumentsService['require']>>,
+  record: Awaited<ReturnType<DocumentsService["require"]>>,
   document: (typeof DEMO_DOCUMENTS)[number],
 ): boolean {
   return (
@@ -324,12 +346,20 @@ function demoDocumentChanged(
   );
 }
 
-function buildIndexContent(content: string, assets: Awaited<ReturnType<AssetsService['list']>>): string {
+function buildIndexContent(
+  content: string,
+  assets: Awaited<ReturnType<AssetsService["list"]>>,
+): string {
   const sections = assets
-    .filter((asset) => asset.kind !== 'source' && (asset.ocr_text || asset.description))
+    .filter(
+      (asset) =>
+        asset.kind !== "source" && (asset.ocr_text || asset.description),
+    )
     .map((asset) => {
-      const page = asset.page_number ? `（第 ${asset.page_number} 页）` : '';
-      return `### 图片 ${asset.ordinal ?? ''}${page}\n\n${[asset.ocr_text, asset.description].filter(Boolean).join('\n\n')}`;
+      const page = asset.page_number ? `（第 ${asset.page_number} 页）` : "";
+      return `### 图片 ${asset.ordinal ?? ""}${page}\n\n${[asset.ocr_text, asset.description].filter(Boolean).join("\n\n")}`;
     });
-  return sections.length ? `${content.trim()}\n\n## 图片可检索内容\n\n${sections.join('\n\n')}` : content;
+  return sections.length
+    ? `${content.trim()}\n\n## 图片可检索内容\n\n${sections.join("\n\n")}`
+    : content;
 }

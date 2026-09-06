@@ -1,13 +1,16 @@
-export type DocumentMemoryStatus = 'pending' | 'extracting' | 'ready' | 'failed';
-export type DocumentMemoryOrigin = 'auto' | 'user';
+export type DocumentMemoryStatus =
+  | "pending"
+  | "extracting"
+  | "ready"
+  | "failed";
 export type DocumentMemoryJobStatus =
-  | 'queued'
-  | 'running'
-  | 'retry_wait'
-  | 'succeeded'
-  | 'failed'
-  | 'superseded'
-  | 'canceled';
+  | "queued"
+  | "running"
+  | "retry_wait"
+  | "succeeded"
+  | "failed"
+  | "superseded"
+  | "canceled";
 
 export interface MemoryEvidence {
   hash: string;
@@ -19,8 +22,6 @@ interface MemoryItemBase {
   id: string;
   evidence: MemoryEvidence[];
   confidence: number;
-  origin: DocumentMemoryOrigin;
-  pinned: boolean;
 }
 
 export interface GlossaryMemoryItem extends MemoryItemBase {
@@ -42,36 +43,15 @@ export interface GlobalSettingMemoryItem extends MemoryItemBase {
 export interface DocumentMemoryProfile {
   doc_id: string;
   space_id: string;
-  source_document_version: number;
-  memory_version: number;
-  status: DocumentMemoryStatus;
+  source_document_version: number;  //文档版本号
+  status: DocumentMemoryStatus;  //状态：pending 待处理 / extracting 提取中 / ready 可用 / failed 失败
   glossary: GlossaryMemoryItem[];
   style_tags: StyleMemoryItem[];
   global_settings: GlobalSettingMemoryItem[];
-  suppressed_keys: string[];
   source_chunk_hashes: string[];
   last_error: string | null;
   created_at: Date;
   updated_at: Date;
-}
-
-export interface EditableGlossaryItem {
-  id?: string;
-  term: string;
-  definition: string;
-  aliases?: string[];
-}
-
-export interface EditableStyleItem {
-  id?: string;
-  label: string;
-  instruction: string;
-}
-
-export interface EditableGlobalSettingItem {
-  id?: string;
-  key: string;
-  value: string;
 }
 
 export interface DocumentMemoryJobRecord {
@@ -95,8 +75,13 @@ export interface DocumentMemoryJobRecord {
   finished_at: Date | null;
   updated_at: Date;
 }
-
+/**
+ * 从文档中提取的术语表 风格标签 全局设置
+ */
 export interface ExtractedDocumentMemory {
+  /**
+   * 从文档中提取的词汇表项
+   */
   glossary: Array<{
     term: string;
     definition: string;
@@ -104,12 +89,18 @@ export interface ExtractedDocumentMemory {
     evidence_hashes?: string[];
     confidence: number;
   }>;
+  /**
+   * 从文档中提取的风格标签
+   */
   style_tags: Array<{
     label: string;
     instruction: string;
     evidence_hashes?: string[];
     confidence: number;
   }>;
+  /**
+   * 从文档中提取的全局设置
+   */
   global_settings: Array<{
     key: string;
     value: string;

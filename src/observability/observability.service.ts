@@ -8,48 +8,24 @@ import type {
 } from '../common/types.js';
 import { AppConfig } from '../config/app-config.js';
 import { DatabaseService } from '../database/database.service.js';
-
-interface TraceRecord {
-  trace_id: string;
-  user_id: string | null;
-  space_id: string | null;
-  entrypoint: string;
-  query: string;
-  mode: string;
-  tool_name: string | null;
-  status: string;
-  has_evidence: boolean | null;
-  retrieval_ms: number;
-  generation_ms: number;
-  citation_count: number;
-  inserted: boolean;
-  helpful_state: string | null;
-  model_name: string;
-  collection_name: string;
-  payload: Record<string, unknown>;
-  error: string | null;
-  created_at: Date;
-  completed_at: Date | null;
-}
-
-interface FeedbackRecord {
-  trace_id: string;
-  user_id: string;
-  space_id: string;
-  action: FeedbackAction;
-  comment: string;
-  created_at: Date;
-}
+import {
+  ObservabilityRepository,
+  type FeedbackRecord,
+  type TraceRecord,
+} from './observability.repository.js';
 
 @Injectable()
 export class ObservabilityService {
   private readonly traces = new Map<string, TraceRecord>();
   private readonly feedback: FeedbackRecord[] = [];
+  private readonly repository: ObservabilityRepository;
 
   constructor(
     private readonly database: DatabaseService,
     private readonly config: AppConfig,
-  ) {}
+  ) {
+    this.repository = new ObservabilityRepository(database);
+  }
 
   async recordSearch(
     trace: RetrievalTrace,
@@ -90,26 +66,7 @@ export class ObservabilityService {
       completed_at: null,
     };
     if (this.database.observabilityEnabled) {
-      await this.database.query(
-        `INSERT INTO rag_traces
-          (trace_id,user_id,space_id,entrypoint,query_text,mode,status,retrieval_ms,
-           generation_ms,citation_count,inserted,helpful_state,model_name,collection_name,payload,created_at)
-         VALUES (?,?,?,?,?,?,'search',?,0,?,FALSE,NULL,?,?,?,?)`,
-        [
-          record.trace_id,
-          record.user_id,
-          record.space_id,
-          record.entrypoint,
-          record.query,
-          record.mode,
-          record.retrieval_ms,
-          record.citation_count,
-          record.model_name,
-          record.collection_name,
-          JSON.stringify(record.payload),
-          record.created_at,
-        ],
-      );
+      await this.repository.insertTrace(record);
     } else this.traces.set(trace.trace_id, record);
   }
 
@@ -121,11 +78,7 @@ export class ObservabilityService {
     error: string | null = null,
   ): Promise<void> {
     if (this.database.observabilityEnabled) {
-      await this.database.query(
-        `UPDATE rag_traces SET tool_name=?, status=?, has_evidence=?, generation_ms=?,
-         error=?, completed_at=UTC_TIMESTAMP(6) WHERE trace_id=?`,
-        [toolName, error ? 'error' : 'completed', hasEvidence, generationMs, error?.slice(0, 2000) ?? null, traceId],
-      );
+      await this.repository.complete(traceId, toolName, hasEvidence, generationMs, error);
       return;
     }
     const current = this.traces.get(traceId);
@@ -158,17 +111,7 @@ export class ObservabilityService {
       created_at: new Date(),
     };
     if (this.database.observabilityEnabled) {
-      await this.database.query(
-        `INSERT INTO rag_feedback_events
-          (event_id,trace_id,user_id,space_id,action,comment,created_at)
-         VALUES (?,?,?,?,?,?,?)`,
-        [randomUUID().replaceAll('-', ''), traceId, context.user_id, context.space_id, action, comment, record.created_at],
-      );
-      if (action === 'inserted') {
-        await this.database.query('UPDATE rag_traces SET inserted=TRUE WHERE trace_id=?', [traceId]);
-      } else if (action === 'helpful' || action === 'unhelpful') {
-        await this.database.query('UPDATE rag_traces SET helpful_state=? WHERE trace_id=?', [action, traceId]);
-      }
+      await this.repository.insertFeedback(randomUUID().replaceAll('-', ''), record);
     } else this.feedback.push(record);
     if (!this.database.observabilityEnabled) {
       const current = this.traces.get(traceId);
@@ -225,11 +168,8 @@ export class ObservabilityService {
 
   async getTrace(traceId: string, context: AccessContext): Promise<Record<string, unknown> | null> {
     if (this.database.observabilityEnabled) {
-      const rows = await this.database.query<Record<string, unknown>>(
-        'SELECT * FROM rag_traces WHERE trace_id=? AND user_id=? AND space_id=?',
-        [traceId, context.user_id, context.space_id],
-      );
-      return rows[0] ? serializeTrace(mapTrace(rows[0])) : null;
+      const trace = await this.repository.findScoped(traceId, context.user_id, context.space_id);
+      return trace ? serializeTrace(trace) : null;
     }
     const trace = this.traces.get(traceId);
     return trace && trace.user_id === context.user_id && trace.space_id === context.space_id
@@ -246,16 +186,11 @@ export class ObservabilityService {
           item.created_at >= from,
       );
     }
-    const userClause = userScoped ? ' AND user_id=?' : '';
-    const params: unknown[] = userScoped
-      ? [context.space_id, from, context.user_id]
-      : [context.space_id, from];
-    return (
-      await this.database.query<Record<string, unknown>>(
-        `SELECT * FROM rag_traces WHERE space_id=? AND created_at>=?${userClause}`,
-        params,
-      )
-    ).map(mapTrace);
+    return this.repository.listScoped(
+      context.space_id,
+      from,
+      userScoped ? context.user_id : undefined,
+    );
   }
 }
 
@@ -295,31 +230,6 @@ function traceSummary(item: TraceRecord) {
     citation_count: item.citation_count,
     error: item.error,
     created_at: item.created_at,
-  };
-}
-
-function mapTrace(row: Record<string, unknown>): TraceRecord {
-  return {
-    trace_id: String(row.trace_id),
-    user_id: row.user_id == null ? null : String(row.user_id),
-    space_id: row.space_id == null ? null : String(row.space_id),
-    entrypoint: String(row.entrypoint),
-    query: String(row.query_text),
-    mode: String(row.mode),
-    tool_name: row.tool_name == null ? null : String(row.tool_name),
-    status: String(row.status),
-    has_evidence: row.has_evidence == null ? null : Boolean(row.has_evidence),
-    retrieval_ms: Number(row.retrieval_ms),
-    generation_ms: Number(row.generation_ms),
-    citation_count: Number(row.citation_count),
-    inserted: Boolean(row.inserted),
-    helpful_state: row.helpful_state == null ? null : String(row.helpful_state),
-    model_name: String(row.model_name ?? ''),
-    collection_name: String(row.collection_name ?? ''),
-    payload: typeof row.payload === 'string' ? JSON.parse(row.payload) : (row.payload as Record<string, unknown>),
-    error: row.error == null ? null : String(row.error),
-    created_at: new Date(row.created_at as string | number | Date),
-    completed_at: row.completed_at == null ? null : new Date(row.completed_at as string | number | Date),
   };
 }
 

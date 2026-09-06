@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { AccessContext } from '../common/types.js';
-import { AssetsService, sha256 } from '../documents/assets.service.js';
+import { AssetsService, sha256 } from '../documents/assets/assets.service.js';
 import { BLOB_STORAGE, type BlobStorage } from '../storage/blob-storage.js';
 import { DoclingParserService } from './docling-parser.service.js';
 import { DocumentImportsService } from './document-imports.service.js';

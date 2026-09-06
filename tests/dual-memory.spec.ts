@@ -1,11 +1,10 @@
-import { ConflictException } from '@nestjs/common';
-import type { DocumentMemoryUpdateDto } from '../src/common/dto.js';
 import type { AccessContext } from '../src/common/types.js';
 import { ConversationMemoryService } from '../src/ai/memory.service.js';
 import { AppConfig } from '../src/config/app-config.js';
 import type { DocumentRecord } from '../src/documents/document.types.js';
-import { DocumentMemoryService } from '../src/documents/document-memory.service.js';
-import { DocumentMemoryJobsService } from '../src/documents/document-memory-jobs.service.js';
+import { DocumentMemoryRepository } from '../src/documents/document-memory/document-memory.repository.js';
+import { DocumentMemoryService } from '../src/documents/document-memory/document-memory.service.js';
+import { DocumentMemoryJobsService } from '../src/documents/document-memory/document-memory-jobs.service.js';
 
 const alice: AccessContext = {
   user_id: 'alice',
@@ -89,7 +88,7 @@ describe('ConversationMemoryService', () => {
 });
 
 describe('DocumentMemoryService', () => {
-  test('filters low confidence, preserves user locks, and suppresses deleted semantic keys', async () => {
+  test('filters low confidence and replaces automatic memory on a full extraction', async () => {
     const service = new DocumentMemoryService(memoryConfig(), inMemoryDatabase());
     const source = document(1);
     const evidence = new Map([
@@ -112,43 +111,57 @@ describe('DocumentMemoryService', () => {
     });
     expect(extracted.glossary.map((item) => item.term)).toEqual(['双层记忆']);
 
-    const edited = await service.updateByUser(source, {
-      expected_memory_version: extracted.memory_version,
-      glossary: [{ id: extracted.glossary[0]!.id, term: '双层记忆', definition: '最近六轮 + 文档长期设定。', aliases: [] }],
-      style_tags: extracted.style_tags.map((item) => ({ id: item.id, label: item.label, instruction: item.instruction })),
-      global_settings: [],
-    } as DocumentMemoryUpdateDto);
-    expect(edited.glossary[0]).toMatchObject({ origin: 'user', pinned: true, confidence: 1 });
-    expect(edited.style_tags[0]).toMatchObject({ origin: 'auto', pinned: false });
-    expect(edited.suppressed_keys).toContain('setting:产品名');
-
     const refreshed = await service.applyExtraction({
       document: document(2),
       currentHashes: ['hash-1'],
       fullExtraction: true,
       evidenceByHash: evidence,
       extracted: {
-        glossary: [{ term: '双层记忆', definition: '模型试图覆盖。', confidence: 0.99, evidence_hashes: ['hash-1'] }],
+        glossary: [{ term: '双层记忆', definition: '模型根据新版正文更新。', confidence: 0.99, evidence_hashes: ['hash-1'] }],
         style_tags: [],
-        global_settings: [{ key: '产品名', value: '模型试图恢复。', confidence: 0.99, evidence_hashes: ['hash-1'] }],
+        global_settings: [],
       },
     });
-    expect(refreshed.glossary[0]!.definition).toBe('最近六轮 + 文档长期设定。');
+    expect(refreshed.glossary[0]!.definition).toBe('模型根据新版正文更新。');
     expect(refreshed.global_settings).toEqual([]);
     expect(await service.promptText('doc-1', 1, '双层记忆是什么')).toBe('');
-    expect(await service.promptText('doc-1', 2, '双层记忆是什么')).toContain('最近六轮 + 文档长期设定。');
+    expect(await service.promptText('doc-1', 2, '双层记忆是什么')).toContain('模型根据新版正文更新。');
   });
+});
 
-  test('rejects stale memory edits with an optimistic-lock conflict', async () => {
-    const service = new DocumentMemoryService(memoryConfig(), inMemoryDatabase());
-    const source = document();
-    await service.markPending(source);
-    await expect(service.updateByUser(source, {
-      expected_memory_version: 9,
-      glossary: [],
-      style_tags: [],
-      global_settings: [],
-    } as DocumentMemoryUpdateDto)).rejects.toBeInstanceOf(ConflictException);
+describe('DocumentMemoryRepository', () => {
+  test('ignores legacy user-managed items when loading automatic memory', async () => {
+    const now = new Date('2026-09-06T00:00:00.000Z');
+    const repository = new DocumentMemoryRepository({
+      query: async () => [{
+        doc_id: 'doc-1',
+        space_id: 'space-a',
+        source_document_version: 1,
+        status: 'ready',
+        glossary: JSON.stringify([
+          {
+            id: 'manual', term: '人工术语', definition: '不再使用', aliases: [],
+            evidence: [], confidence: 1, origin: 'user', pinned: true,
+          },
+          {
+            id: 'automatic', term: '自动术语', definition: '来自正文', aliases: [],
+            evidence: [], confidence: 0.9, origin: 'auto', pinned: false,
+          },
+        ]),
+        style_tags: '[]',
+        global_settings: '[]',
+        source_chunk_hashes: '[]',
+        last_error: null,
+        created_at: now,
+        updated_at: now,
+      }],
+    } as never);
+
+    const profile = await repository.findByDocumentId('doc-1');
+    expect(profile?.glossary).toEqual([{
+      id: 'automatic', term: '自动术语', definition: '来自正文', aliases: [],
+      evidence: [], confidence: 0.9,
+    }]);
   });
 });
 

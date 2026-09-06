@@ -3,25 +3,28 @@ import { validateAgentToolArguments, type AiWriteDto } from "../common/dto.js";
 import type { AgentToolCall, WriteIntent } from "../common/types.js";
 import { AppConfig } from "../config/app-config.js";
 import { LlmService } from "./llm.service.js";
+import {
+  AGENT_TOOL_DEFINITIONS,
+  LlmToolName,
+  type AgentToolName,
+} from './llm-tools.js';
 
-type ToolName = AgentToolCall["name"];
-
-const TOOL_TO_INTENT: Record<ToolName, WriteIntent> = {
-  search_knowledge_base: "knowledge_qa",
-  summarize_current_document: "summarize_document",
-  continue_paragraph: "continue_paragraph",
-  optimize_format: "format_selection",
+const TOOL_TO_INTENT: Record<AgentToolName, WriteIntent> = {
+  [LlmToolName.SearchKnowledgeBase]: "knowledge_qa",
+  [LlmToolName.SummarizeCurrentDocument]: "summarize_document",
+  [LlmToolName.ContinueParagraph]: "continue_paragraph",
+  [LlmToolName.OptimizeFormat]: "format_selection",
 };
 
-const INTENT_TO_TOOL: Record<WriteIntent, ToolName> = {
-  knowledge_qa: "search_knowledge_base",
-  knowledge_search: "search_knowledge_base",
-  summarize_document: "summarize_current_document",
-  continue_paragraph: "continue_paragraph",
-  format_selection: "optimize_format",
-  fill_in_middle: "optimize_format",
-  correct_text: "optimize_format",
-  expand_text: "optimize_format",
+const INTENT_TO_TOOL: Record<WriteIntent, AgentToolName> = {
+  knowledge_qa: LlmToolName.SearchKnowledgeBase,
+  knowledge_search: LlmToolName.SearchKnowledgeBase,
+  summarize_document: LlmToolName.SummarizeCurrentDocument,
+  continue_paragraph: LlmToolName.ContinueParagraph,
+  format_selection: LlmToolName.OptimizeFormat,
+  fill_in_middle: LlmToolName.OptimizeFormat,
+  correct_text: LlmToolName.OptimizeFormat,
+  expand_text: LlmToolName.OptimizeFormat,
 };
 
 const LEGACY_TOOL_DESCRIPTIONS: Record<string, string> = {
@@ -34,52 +37,9 @@ const LEGACY_TOOL_DESCRIPTIONS: Record<string, string> = {
   expand_text: "在保持原意和文风的前提下扩写选中内容或当前文档。",
 };
 
-const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
-  search_knowledge_base: "检索有权限访问的知识库并生成带来源引用的回答。",
-  summarize_current_document: "仅依据当前文档内容生成摘要，不引入外部事实。",
-  continue_paragraph: "根据光标上下文续写当前段落，必要时检索知识库。",
-  optimize_format: "优化选中文本的结构与表达，保留原意和事实。",
-};
-
 void LEGACY_TOOL_DESCRIPTIONS;
 
-export const TOOL_DEFINITIONS = (
-  Object.keys(TOOL_DESCRIPTIONS) as ToolName[]
-).map((name) => {
-  const retrieves =
-    name === "search_knowledge_base" || name === "continue_paragraph";
-  const properties: Record<string, unknown> = {
-    query: { type: "string" },
-    confidence: { type: "number", minimum: 0, maximum: 1 },
-    reason: { type: "string" },
-  };
-  if (retrieves) {
-    properties.query_variants = {
-      type: "array",
-      items: { type: "string" },
-      maxItems: 3,
-      description: "保持原意的检索改写，不得删除精确标识符。",
-    };
-    properties.retrieval_domain = {
-      type: "string",
-      enum: ["public", "private", "team", "current_document"],
-    };
-  }
-  return {
-    type: "function",
-    function: {
-      name,
-      description: TOOL_DESCRIPTIONS[name],
-      parameters: {
-        type: "object",
-        properties,
-        required: retrieves
-          ? ["query", "retrieval_domain", "confidence", "reason"]
-          : ["query", "confidence", "reason"],
-      },
-    },
-  };
-});
+export { AGENT_TOOL_DEFINITIONS as TOOL_DEFINITIONS };
 
 @Injectable()
 export class AgentToolsService {
@@ -115,18 +75,19 @@ export class AgentToolsService {
       this.llm.isConfigured
     ) {
       try {
-        const selected = await this.llm.selectTool(request, TOOL_DEFINITIONS);
+        const selected = await this.llm.selectTool(request, AGENT_TOOL_DEFINITIONS);
         //校验模型返回的工具名是否在支持的列表里，防止模型瞎返回。
         if (!(selected.name in TOOL_TO_INTENT))
           throw new Error(`Unsupported tool: ${selected.name}`);
-        const name = selected.name as ToolName;
+        const name = selected.name as AgentToolName;
         //对模型返回的参数做 schema 校验
         const validated = await validateAgentToolArguments(
           {
             ...selected.arguments,
             reason: selected.reason || selected.arguments.reason,
           },
-          name === "search_knowledge_base" || name === "continue_paragraph",
+          name === LlmToolName.SearchKnowledgeBase ||
+            name === LlmToolName.ContinueParagraph,
         );
 
         //返回结构化结果
@@ -193,7 +154,7 @@ export class AgentToolsService {
 
   private ruleCall(
     request: AiWriteDto,
-    name: ToolName,
+    name: AgentToolName,
     source: AgentToolCall["source"],
     reason: string,
     confidence: number,
@@ -269,7 +230,7 @@ export function classifyIntent(
  */
 export function normalizeArguments(
   request: AiWriteDto,
-  name: ToolName,
+  name: AgentToolName,
   args: Record<string, any>,
   config: AppConfig,
 ): Record<string, unknown> {
@@ -278,7 +239,10 @@ export function normalizeArguments(
   if (!["public", "private", "team", "current_document"].includes(domain))
     domain = request.retrieval_domain;
   if (
-    ["summarize_current_document", "optimize_format"].includes(name) &&
+    ([
+      LlmToolName.SummarizeCurrentDocument,
+      LlmToolName.OptimizeFormat,
+    ] as AgentToolName[]).includes(name) &&
     request.current_document
   ) {
     domain = "current_document";
@@ -290,7 +254,10 @@ export function normalizeArguments(
       ...(Array.isArray(args.query_variants) ? args.query_variants : []),
     ],
     config.queryExpansionEnabled &&
-      ["search_knowledge_base", "continue_paragraph"].includes(name),
+      ([
+        LlmToolName.SearchKnowledgeBase,
+        LlmToolName.ContinueParagraph,
+      ] as AgentToolName[]).includes(name),
     config.queryExpansionMaxVariants,
   );
   return {

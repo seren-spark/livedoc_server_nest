@@ -3,17 +3,16 @@ import { IndexingModule } from '../indexing/indexing.module.js';
 import { RetrievalModule } from '../retrieval/retrieval.module.js';
 import { DocumentsController } from './documents.controller.js';
 import { DocumentsService } from './documents.service.js';
-import { AssetsService } from './assets.service.js';
+import { AssetsService } from './assets/assets.service.js';
 import { LlmModule } from '../ai/llm.module.js';
-import { DocumentMemoryController } from './document-memory.controller.js';
-import { DocumentMemoryJobsService } from './document-memory-jobs.service.js';
-import { DocumentMemoryService } from './document-memory.service.js';
-import { DocumentMemoryWorkerService } from './document-memory-worker.service.js';
+import { DocumentMemoryJobsService } from './document-memory/document-memory-jobs.service.js';
+import { DocumentMemoryService } from './document-memory/document-memory.service.js';
+import { DocumentMemoryWorkerService } from './document-memory/document-memory-worker.service.js';
 import { MemoryModule } from '../ai/memory.module.js';
 
 @Module({
   imports: [forwardRef(() => IndexingModule), RetrievalModule, LlmModule, MemoryModule],
-  controllers: [DocumentsController, DocumentMemoryController],
+  controllers: [DocumentsController],
   providers: [
     DocumentsService,
     AssetsService,

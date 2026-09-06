@@ -1,23 +1,29 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import type { AccessContext } from '../common/types.js';
-import { AppConfig } from '../config/app-config.js';
-import { DatabaseService } from '../database/database.service.js';
-import { PersistentJobStore } from '../jobs/persistent-job-store.js';
-import type { DocumentRecord } from './document.types.js';
+import type { AccessContext } from '../../common/types.js';
+import { AppConfig } from '../../config/app-config.js';
+import { DatabaseService } from '../../database/database.service.js';
+import { PersistentJobStore } from '../../jobs/persistent-job-store.js';
+import type { DocumentRecord } from '../document.types.js';
 import { DocumentMemoryService } from './document-memory.service.js';
 import type { DocumentMemoryJobRecord } from './document-memory.types.js';
+import {
+  DocumentMemoryJobRepository,
+  mapMemoryJob,
+} from './document-memory-job.repository.js';
 
 @Injectable()
 export class DocumentMemoryJobsService {
   private readonly jobs = new Map<string, DocumentMemoryJobRecord>();
   private readonly store: PersistentJobStore<DocumentMemoryJobRecord>;
+  private readonly repository: DocumentMemoryJobRepository;
 
   constructor(
     private readonly config: AppConfig,
     private readonly database: DatabaseService,
     private readonly profiles: DocumentMemoryService,
   ) {
+    this.repository = new DocumentMemoryJobRepository(database);
     this.store = new PersistentJobStore({
       database: this.database,
       enabled: () => this.database.memoryEnabled,
@@ -34,6 +40,7 @@ export class DocumentMemoryJobsService {
     context: AccessContext,
     forceFull = false,
   ): Promise<DocumentMemoryJobRecord | null> {
+    //抢任务 + 版本校验
     if (!this.config.documentMemoryEnabled || !document.content.trim()) return null;
     const now = new Date();
     const dedupeKey = `${document.doc_id}:${document.document_version}:${forceFull ? 'full' : 'incremental'}`;
@@ -46,46 +53,7 @@ export class DocumentMemoryJobsService {
       created_at: now, started_at: null, finished_at: null, updated_at: now,
     };
     if (this.database.memoryEnabled) {
-      const runner = this.database.source.createQueryRunner();
-      await runner.connect();
-      await runner.startTransaction();
-      try {
-        const duplicate = (await runner.query(
-          'SELECT * FROM document_memory_jobs WHERE dedupe_key=? LIMIT 1 FOR UPDATE',
-          [dedupeKey],
-        )) as Record<string, unknown>[];
-        if (duplicate[0]) {
-          await runner.commitTransaction();
-          return mapMemoryJob(duplicate[0]);
-        }
-        await runner.query(
-          `UPDATE document_memory_jobs SET status='superseded',dedupe_key=NULL,
-           worker_id=NULL,lease_expires_at=NULL,finished_at=?,updated_at=?
-          WHERE doc_id=? AND (document_version<? OR (document_version=? AND dedupe_key<>?))
-            AND status IN ('queued','running','retry_wait')`,
-          [now, now, document.doc_id, document.document_version, document.document_version, dedupeKey],
-        );
-        const generations = (await runner.query(
-          'SELECT COALESCE(MAX(generation),0) AS generation FROM document_memory_jobs WHERE doc_id=? AND document_version=?',
-          [document.doc_id, document.document_version],
-        )) as Array<{ generation: number | string }>;
-        job = { ...job, generation: Number(generations[0]?.generation ?? 0) + 1 };
-        await runner.query(
-          `INSERT INTO document_memory_jobs
-            (job_id,doc_id,document_version,generation,status,attempts,max_attempts,
-             requested_by,space_id,force_full,dedupe_key,next_run_at,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [job.job_id, job.doc_id, job.document_version, job.generation, job.status,
-            job.attempts, job.max_attempts, job.requested_by, job.space_id,
-            job.force_full, job.dedupe_key, job.next_run_at, job.created_at, job.updated_at],
-        );
-        await runner.commitTransaction();
-      } catch (error) {
-        await runner.rollbackTransaction();
-        throw error;
-      } finally {
-        await runner.release();
-      }
+      job = await this.repository.enqueue(job);
     } else {
       for (const [id, old] of this.jobs) {
         if (old.doc_id === document.doc_id &&
@@ -150,22 +118,4 @@ export class DocumentMemoryJobsService {
       predicate: (job) => job.doc_id === docId,
     });
   }
-}
-
-export function mapMemoryJob(row: Record<string, unknown>): DocumentMemoryJobRecord {
-  return {
-    job_id: String(row.job_id), doc_id: String(row.doc_id), document_version: Number(row.document_version),
-    generation: Number(row.generation), status: row.status as DocumentMemoryJobRecord['status'],
-    attempts: Number(row.attempts), max_attempts: Number(row.max_attempts),
-    requested_by: String(row.requested_by), space_id: String(row.space_id),
-    force_full: row.force_full === true || Number(row.force_full) === 1,
-    dedupe_key: row.dedupe_key == null ? null : String(row.dedupe_key),
-    worker_id: row.worker_id == null ? null : String(row.worker_id),
-    lease_expires_at: row.lease_expires_at == null ? null : new Date(row.lease_expires_at as string | Date),
-    next_run_at: row.next_run_at == null ? null : new Date(row.next_run_at as string | Date),
-    error: row.error == null ? null : String(row.error), created_at: new Date(row.created_at as string | Date),
-    started_at: row.started_at == null ? null : new Date(row.started_at as string | Date),
-    finished_at: row.finished_at == null ? null : new Date(row.finished_at as string | Date),
-    updated_at: new Date(row.updated_at as string | Date),
-  };
 }

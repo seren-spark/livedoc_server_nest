@@ -1,5 +1,5 @@
 import type { ImportStatus, Visibility } from '../common/types.js';
-import type { PublicDocumentAsset } from '../documents/asset.types.js';
+import type { PublicDocumentAsset } from '../documents/assets/asset.types.js';
 
 export interface DocumentImportRecord {
   import_id: string;

@@ -8,6 +8,63 @@ LiveDoc 的 TypeScript RAG 后端。本仓库默认监听 `8001`；废弃的 `..
 
 NestJS 是运行在 Node.js 上的后端框架，不是与 Node.js 并列的第二个运行时。本项目的准确表述是：**Node.js 20 + TypeScript + NestJS + Fastify**。NestJS 提供 Module、Guard、DTO、Provider 和依赖注入，Fastify 提供 HTTP adapter，Node.js 提供运行时和 Worker Thread。
 
+## 文档 Agent：Plan-and-Execute 与 ReAct 式执行
+
+`DocumentAgentService` 在单个 NestJS 编排服务中完成路由、规划、工具执行、自检与结果校验。Ask / Plan / Agent 控制本轮产出，`react / plan_execute` 控制完成任务的策略；分类、规划和自检可配置独立模型，默认复用主模型。
+
+```mermaid
+flowchart LR
+  Input[需求与编辑器快照] --> Route{规则 / 分类模型}
+  Route -->|简单任务| Loop[ReAct 式工具循环]
+  Route -->|复杂任务| Plan[结构化计划]
+  Plan --> Execute[依赖调度 / 步骤工具循环]
+  Execute --> Compose[汇总中间结果]
+  Loop --> Check[条件自检 / 确定性校验]
+  Compose --> Check
+  Check --> Candidate[回答 / 计划 / 编辑或文稿候选]
+  Candidate --> Review[前端预览与人工采纳]
+```
+
+### 路由与计划执行
+
+- `ruleRoute` 优先识别已确认计划、Plan 模式、多步骤与选区任务；其余请求交给分类模型。分类失败回退到直接工具循环，自动规划失败时同样回退，不改变资料权限与输出模式。
+- `ExecutionPlan` 包含 `goal`、`outline`、`constraints` 与最多 5 个 `steps`。步骤声明 `depends_on` 和 `read / search / compose` 能力，服务端拒绝循环依赖和无效标识。
+- 执行器选择依赖已满足的步骤，独立读取和检索最多并发 3 个，编写步骤单独执行。步骤先提交只读中间结果，全部结束后再由最终工具循环综合生成候选。
+- 显式 Plan 模式只提交计划，用户调整并确认后携带 `confirmed_plan` 和最新快照执行；手动编辑计划按列表顺序建立依赖。Agent 模式可以自动规划并继续执行，正文仍需用户确认。
+- 当前执行遵循已验证的计划，不包含执行中自动重规划。
+
+### 工具循环与权限
+
+每轮模型提交一个 Function Call；服务端按当前工具白名单与 JSON Schema 校验参数，执行并将返回值写入工具消息，供下一轮继续选择。参数或执行错误允许反馈后修正一次，仍失败则停止当前循环。
+
+| 工具类别       | 实现                                                                                                      |
+| -------------- | --------------------------------------------------------------------------------------------------------- |
+| 原文与参考资料 | `read_current_document`、`read_reference`，支持区域、精确选区及分页读取                                   |
+| 知识检索       | `search_knowledge_base`，复用正式 RAG 与用户选择的检索范围                                                |
+| 写作辅助       | `list_templates`、`read_template`、`list_categories`                                                      |
+| 外部资料       | 按本轮联网开关与配置开放 `search_web`、个人联网工具及白名单 MCP 工具                                      |
+| 结果提交       | `finish_answer`、`submit_plan`、`request_clarification`、`propose_document_edits`、`propose_new_document` |
+
+工具集按模式、输出位置、资料与联网权限裁剪；Ask 不开放编辑提交，计划步骤只返回中间结果。工具扩展最多一次，仍受原权限约束。修改建议必须先读取目标区域，选区修改必须精确读取选区；工具提交候选不会直接写正文。
+
+### 上下文、自检与人工确认
+
+初始上下文包含文档区域目录、短预览、参考资料清单、会话记忆和适用的文档记忆。每次调用前对消息与工具定义计算 Token 预算；长工具历史可压缩并保留来源及分页标识，仍超限则要求缩小范围。
+
+独立文稿、多条修改建议，以及深度思考下的回答或编辑会触发一次 Critic 检查，关注要求遗漏、证据支持、矛盾和结构。发现问题最多修正一次，修正后执行结构校验；没有第二轮模型复审。自检异常标记为 `incomplete` 并保留候选，随后仍要通过引用、资料权限、版本与修改范围校验，再由用户核对采纳。
+
+前端以 ProseMirror Decoration 展示候选，采纳时才通过事务写入；位置映射与原文比对检测人工修改冲突，全部接受可一次撤销。候选和文稿进入 `awaiting_review`，需要补充信息时进入 `needs_input`。
+
+### 事件与运行预算
+
+Agent 使用独立的 `POST /ai/agent` SSE 协议，事件包括 `run_started`、`route`、`plan`、`step`、`tool_start`、`tool_result`、`reflection`、`delta`、`result`、`done`，失败时发送 `error`。各事件带 `run_id` 和递增 `seq`；回答与文稿的 `delta` 在候选完成校验后分段发送，工具与步骤事件展示执行进度。
+
+默认共享 12 轮执行循环预算，单步最多 4 轮，总任务时限 300 秒；分类、规划、自检与压缩可另有模型调用。用户停止或连接关闭会取消执行。当前并发与频率控制位于单 API 进程，不支持刷新后候选恢复或断点续跑。
+
+核心配置为 `AGENT_MAX_TOOL_CALLS`、`AGENT_TIMEOUT_SECONDS`、`AGENT_MAX_OUTPUT_TOKENS`；角色模型分别使用 `AGENT_CLASSIFIER_MODEL`、`AGENT_PLAN_MODEL`、`AGENT_CRITIC_MODEL`。
+
+源码入口：[编排服务](src/ai/document-agent.service.ts)、[结果校验](src/ai/document-agent.validation.ts)、[模型适配](src/ai/llm.service.ts)、[运行审计](src/ai/agent-audit.service.ts)。使用与可选能力配置见 [文档 Agent 说明](docs/document-agent.md)，前端事务与完整交互机制见 [工作台 README](https://github.com/seren-spark/livedoc/blob/feat/knowledge/README.md#文档-agentplan-and-execute-与工具执行)。
+
 ## 模块边界
 
 - `Auth`：开发身份、PBKDF2 密码、Bearer session、Guard。

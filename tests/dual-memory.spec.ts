@@ -166,22 +166,20 @@ describe('DocumentMemoryRepository', () => {
 });
 
 describe('DocumentMemoryJobsService', () => {
-  test('deduplicates jobs and supersedes stale version or extraction mode', async () => {
+  test('deduplicates jobs and supersedes stale document versions', async () => {
     const config = memoryConfig({ documentMemoryMaxAttempts: 3 });
     const profiles = new DocumentMemoryService(config, inMemoryDatabase());
     const jobs = new DocumentMemoryJobsService(config, inMemoryDatabase(), profiles);
 
-    const incremental = await jobs.enqueue(document(1), alice, false);
-    expect((await jobs.enqueue(document(1), alice, false))?.job_id).toBe(incremental?.job_id);
+    const first = await jobs.enqueue(document(1), alice);
+    expect((await jobs.enqueue(document(1), alice))?.job_id).toBe(first?.job_id);
 
-    const full = await jobs.enqueue(document(1), alice, true);
-    expect(full?.job_id).not.toBe(incremental?.job_id);
-    const claimedFull = await jobs.claimNext('worker-1');
-    expect(claimedFull).toMatchObject({ job_id: full?.job_id, force_full: true, attempts: 1 });
-    expect(await jobs.isActive(claimedFull!)).toBe(true);
+    const claimed = await jobs.claimNext('worker-1');
+    expect(claimed).toMatchObject({ job_id: first?.job_id, attempts: 1 });
+    expect(await jobs.isActive(claimed!)).toBe(true);
 
-    const latest = await jobs.enqueue(document(2), alice, false);
-    expect(await jobs.isActive(claimedFull!)).toBe(false);
+    const latest = await jobs.enqueue(document(2), alice);
+    expect(await jobs.isActive(claimed!)).toBe(false);
     const claimedLatest = await jobs.claimNext('worker-2');
     expect(claimedLatest).toMatchObject({ job_id: latest?.job_id, document_version: 2 });
     expect(await jobs.fail({ ...claimedLatest!, attempts: 3 }, 'terminal failure')).toBe(true);

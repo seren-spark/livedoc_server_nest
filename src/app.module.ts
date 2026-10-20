@@ -12,11 +12,13 @@ import { ObservabilityModule } from './observability/observability.module.js';
 import { RetrievalModule } from './retrieval/retrieval.module.js';
 import { StorageModule } from './storage/storage.module.js';
 import { DocumentImportsModule } from './document-imports/document-imports.module.js';
+import { ArticleStorageModule } from './articles/article.repository.js';
 
 @Module({
   imports: [
     CoreConfigModule,
     DatabaseModule,
+    ArticleStorageModule,
     StorageModule,
     LlmModule,
     ObservabilityModule,

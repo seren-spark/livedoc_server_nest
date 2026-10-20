@@ -2,7 +2,7 @@ import { DatabaseService } from '../../database/database.service.js';
 import type { DocumentMemoryJobRecord } from './document-memory.types.js';
 
 const JOB_COLUMNS = `job_id,doc_id,document_version,generation,status,attempts,max_attempts,
-  requested_by,space_id,force_full,dedupe_key,worker_id,lease_expires_at,next_run_at,
+  requested_by,space_id,dedupe_key,worker_id,lease_expires_at,next_run_at,
   error,created_at,started_at,finished_at,updated_at`;
 
 export class DocumentMemoryJobRepository {
@@ -44,8 +44,8 @@ export class DocumentMemoryJobRepository {
         await manager.query(
           `INSERT INTO document_memory_jobs
             (job_id,doc_id,document_version,generation,status,attempts,max_attempts,
-             requested_by,space_id,force_full,dedupe_key,next_run_at,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+             requested_by,space_id,dedupe_key,next_run_at,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [
             next.job_id,
             next.doc_id,
@@ -56,7 +56,6 @@ export class DocumentMemoryJobRepository {
             next.max_attempts,
             next.requested_by,
             next.space_id,
-            next.force_full,
             next.dedupe_key,
             next.next_run_at,
             next.created_at,
@@ -93,7 +92,6 @@ export function mapMemoryJob(row: Record<string, unknown>): DocumentMemoryJobRec
     max_attempts: Number(row.max_attempts),
     requested_by: String(row.requested_by),
     space_id: String(row.space_id),
-    force_full: row.force_full === true || Number(row.force_full) === 1,
     dedupe_key: row.dedupe_key == null ? null : String(row.dedupe_key),
     worker_id: row.worker_id == null ? null : String(row.worker_id),
     lease_expires_at: date(row.lease_expires_at),

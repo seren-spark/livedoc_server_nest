@@ -48,7 +48,11 @@ export class SparseEmbeddingService {
     ].sort((a, b) => a - b);
     return { indices, values: indices.map(() => 1) };
   }
-
+  /**
+   * 对文本进行关键词分词
+   * @param text 输入的文本
+   * @returns 关键词数组
+   */
   tokenize(text: string): string[] {
     return tokenizeKeyword(text).filter((item) => item.length <= 40);
   }

@@ -54,6 +54,12 @@ describe('Python 34-test parity - unit and structural checks', () => {
 
     expect(visibleToAlice).toEqual([
       'public_livedoc_workflow_demo',
+      'public_livedoc_rag_quality',
+      'public_livedoc_import_pipeline',
+      'public_livedoc_permission_model',
+      'public_livedoc_editor_assist',
+      'public_livedoc_index_versioning',
+      'public_livedoc_product_walkthrough',
       'alice_private_writing',
       'team_alpha_rag_spec',
     ]);
@@ -191,7 +197,7 @@ describe('Python 34-test parity - unit and structural checks', () => {
   });
 
   test('persistent trace schema binds trace ownership to user and space', () => {
-    const source = readFileSync(resolve('src/observability/observability.service.ts'), 'utf8');
+    const source = readFileSync(resolve('src/observability/observability.repository.ts'), 'utf8');
     expect(source).toContain('WHERE trace_id=? AND user_id=? AND space_id=?');
   });
 
@@ -264,7 +270,7 @@ describe('Python 34-test parity - unit and structural checks', () => {
   });
 
   test('MySQL memory query is scoped by conversation, user and space', () => {
-    const source = readFileSync(resolve('src/ai/memory.service.ts'), 'utf8');
+    const source = readFileSync(resolve('src/ai/conversation-memory.repository.ts'), 'utf8');
     expect(source).toContain('conversation_id=? AND user_id=? AND space_id=?');
   });
 

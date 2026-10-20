@@ -13,7 +13,7 @@ export class RerankerService {
   ) {}
 
   /**
-   * 精排
+   * 精排 从已经召回的候选中，挑前 topN 条重新打分、重新排序，再把剩余候选接回去。
    * @param query 查询文本
    * @param hits 候选文档列表
    * @param topN 精排候选数量
@@ -22,7 +22,7 @@ export class RerankerService {
   async rerank(query: string, hits: SearchHit[], topN: number): Promise<SearchHit[]> {
     // 第1步：如果配置为 none，直接返回原结果，不做重排
     if (this.config.rerankProvider === 'none') return hits;
-    // 第2步：只取前 topN 个候选进入重排，减少模型调用开销
+    // 第2步：只取前 topN 个候选进入重排
     const candidates = hits.slice(0, topN);
     // 剩余结果保留，稍后拼回
     const tail = hits.slice(topN);

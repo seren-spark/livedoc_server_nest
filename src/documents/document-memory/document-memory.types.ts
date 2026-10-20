@@ -64,7 +64,6 @@ export interface DocumentMemoryJobRecord {
   max_attempts: number;
   requested_by: string;
   space_id: string;
-  force_full: boolean;
   dedupe_key: string | null;
   worker_id: string | null;
   lease_expires_at: Date | null;

@@ -38,17 +38,17 @@ export class DocumentMemoryJobsService {
   async enqueue(
     document: DocumentRecord,
     context: AccessContext,
-    forceFull = false,
   ): Promise<DocumentMemoryJobRecord | null> {
     //抢任务 + 版本校验
     if (!this.config.documentMemoryEnabled || !document.content.trim()) return null;
     const now = new Date();
-    const dedupeKey = `${document.doc_id}:${document.document_version}:${forceFull ? 'full' : 'incremental'}`;
+    const dedupeKey = `${document.doc_id}:${document.document_version}`;
+    //构造初始 job 对象
     let job: DocumentMemoryJobRecord = {
       job_id: randomUUID().replaceAll('-', ''), doc_id: document.doc_id,
       document_version: document.document_version, generation: 1, status: 'queued', attempts: 0,
       max_attempts: this.config.documentMemoryMaxAttempts, requested_by: context.user_id,
-      space_id: context.space_id, force_full: forceFull, dedupe_key: dedupeKey,
+      space_id: context.space_id, dedupe_key: dedupeKey,
       worker_id: null, lease_expires_at: null, next_run_at: now, error: null,
       created_at: now, started_at: null, finished_at: null, updated_at: now,
     };

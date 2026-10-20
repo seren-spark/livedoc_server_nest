@@ -1,11 +1,22 @@
 import { CURRENT_SCHEMA_VERSION } from './migration-version.js';
 
 export const REQUIRED_SCHEMA_COLUMNS = {
+  agent_user_settings: ['space_id','user_id','revision','payload','updated_at'],
+  note_category_trees: ['space_id','owner_id','tree_revision'],
+  note_categories: ['category_id','space_id','owner_id','parent_id','name','sort_order','deleted_at','delete_batch_id','delete_reason'],
+  note_templates: ['template_id','space_id','owner_id','name','description','markdown','instructions','revision'],
+  agent_runs: ['run_id','request_id','user_id','space_id','conversation_id','mode','status','payload','created_at','completed_at'],
+  agent_tool_calls: ['call_id','run_id','step_id','tool_name','source','status','payload','started_at','completed_at'],
+  article_reactions: ['article_id', 'user_id', 'kind', 'created_at'],
+  article_comments: ['comment_id', 'article_id', 'user_id', 'content', 'created_at', 'parent_comment_id', 'deleted_at'],
+  article_drafts: ['article_id', 'space_id', 'owner_id', 'state', 'draft_version', 'draft', 'published_draft_version',
+    'published_metadata', 'published_at', 'last_published_at', 'created_at', 'updated_at'],
   schema_migrations: ['version', 'applied_at'],
   demo_users: ['user_id', 'username', 'email', 'password_hash', 'space_id', 'is_active'],
   demo_user_teams: ['user_id', 'team_id'],
   demo_sessions: ['token_hash', 'user_id', 'expires_at', 'created_at'],
   knowledge_documents: [
+    'category_id','deleted_at','delete_batch_id',
     'doc_id', 'space_id', 'title', 'content', 'visibility', 'source_type', 'tags',
     'team_id', 'owner_id', 'url', 'editor_content', 'source_import_id',
     'document_version', 'index_status', 'active_index_version',
@@ -51,7 +62,7 @@ export const REQUIRED_SCHEMA_COLUMNS = {
   ],
   document_memory_jobs: [
     'job_id', 'doc_id', 'document_version', 'generation', 'status', 'attempts',
-    'max_attempts', 'requested_by', 'space_id', 'force_full', 'dedupe_key',
+    'max_attempts', 'requested_by', 'space_id', 'dedupe_key',
     'worker_id', 'lease_expires_at', 'next_run_at', 'error', 'created_at',
     'started_at', 'finished_at', 'updated_at',
   ],
@@ -67,6 +78,14 @@ export const REQUIRED_SCHEMA_COLUMNS = {
 } as const;
 
 export const REQUIRED_SCHEMA_INDEXES = {
+  note_category_trees: ['PRIMARY'],
+  note_categories: ['PRIMARY','ix_categories_owner'],
+  note_templates: ['PRIMARY','ix_templates_owner'],
+  agent_runs: ['PRIMARY','ux_agent_request','ix_agent_owner'],
+  agent_tool_calls: ['PRIMARY','ix_agent_tools'],
+  article_reactions: ['PRIMARY', 'ix_reactions_user'],
+  article_comments: ['PRIMARY', 'ix_comments_article', 'ix_comments_parent'],
+  article_drafts: ['PRIMARY', 'ix_articles_owner', 'ix_articles_published'],
   knowledge_documents: ['PRIMARY', 'ix_documents_space', 'ix_documents_source_import'],
   index_jobs: ['PRIMARY', 'ix_jobs_claim', 'ix_jobs_document', 'ux_jobs_dedupe_key'],
   document_imports: ['PRIMARY', 'ix_imports_owner', 'ix_imports_status'],

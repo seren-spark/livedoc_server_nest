@@ -3,6 +3,7 @@ import { DataSource, type EntityManager } from 'typeorm';
 import { AppConfig } from '../config/app-config.js';
 import { CURRENT_SCHEMA_VERSION } from './migration-version.js';
 import { formatSchemaProblems, inspectSchemaContract } from './schema-contract.js';
+import { WORKSPACE_SCHEMA } from './workspace-schema.js';
 
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
@@ -81,6 +82,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
 
   async migrate(): Promise<void> {
+    for (const sql of WORKSPACE_SCHEMA) await this.query(sql);
     await this.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
       version VARCHAR(128) PRIMARY KEY, applied_at DATETIME(6) NOT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
@@ -90,6 +92,24 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     );
     const alreadyApplied = applied.length > 0;
     const statements = [
+      `CREATE TABLE IF NOT EXISTS article_reactions (
+        article_id VARCHAR(128) NOT NULL, user_id VARCHAR(128) NOT NULL,
+        kind VARCHAR(16) NOT NULL, created_at DATETIME(6) NOT NULL,
+        PRIMARY KEY (article_id,user_id,kind), INDEX ix_reactions_user (user_id,kind,created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS article_comments (
+        comment_id VARCHAR(64) PRIMARY KEY, article_id VARCHAR(128) NOT NULL,
+        user_id VARCHAR(128) NOT NULL, content TEXT NOT NULL, created_at DATETIME(6) NOT NULL,
+        INDEX ix_comments_article (article_id,created_at,comment_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS article_drafts (
+        article_id VARCHAR(128) PRIMARY KEY, space_id VARCHAR(128) NOT NULL, owner_id VARCHAR(128) NOT NULL,
+        state VARCHAR(32) NOT NULL, draft_version INT NOT NULL, draft JSON NOT NULL,
+        published_draft_version INT NULL, published_metadata JSON NULL,
+        published_at DATETIME(6) NULL, last_published_at DATETIME(6) NULL,
+        created_at DATETIME(6) NOT NULL, updated_at DATETIME(6) NOT NULL,
+        INDEX ix_articles_owner (space_id,owner_id,state,updated_at), INDEX ix_articles_published (state,published_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS demo_users (
         user_id VARCHAR(128) PRIMARY KEY, username VARCHAR(128) NOT NULL,
         email VARCHAR(320) NOT NULL UNIQUE, password_hash VARCHAR(512) NOT NULL,
@@ -207,7 +227,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         document_version INT NOT NULL, generation INT NOT NULL,
         status VARCHAR(32) NOT NULL, attempts INT NOT NULL DEFAULT 0,
         max_attempts INT NOT NULL DEFAULT 3, requested_by VARCHAR(128) NOT NULL,
-        space_id VARCHAR(128) NOT NULL, force_full BOOLEAN NOT NULL DEFAULT FALSE,
+        space_id VARCHAR(128) NOT NULL,
         dedupe_key VARCHAR(320) NULL, worker_id VARCHAR(128) NULL,
         lease_expires_at DATETIME(6) NULL, next_run_at DATETIME(6) NULL,
         error TEXT NULL, created_at DATETIME(6) NOT NULL,
@@ -239,6 +259,24 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     ];
     for (const statement of statements) await this.query(statement);
+    await this.ensureColumn('article_comments', 'parent_comment_id',
+      'ALTER TABLE article_comments ADD COLUMN parent_comment_id VARCHAR(64) NULL');
+    await this.ensureColumn('article_comments', 'deleted_at',
+      'ALTER TABLE article_comments ADD COLUMN deleted_at DATETIME(6) NULL');
+    await this.ensureIndex('article_comments', 'ix_comments_parent',
+      'CREATE INDEX ix_comments_parent ON article_comments (parent_comment_id, deleted_at, created_at, comment_id)');
+    // The existing database may use a different default collation from knowledge_documents.
+    // Article IDs are joined to doc_id, so align the new column with that existing contract.
+    const articleIdCollations = await this.query<{ TABLE_NAME: string; COLLATION_NAME: string }>(
+      `SELECT TABLE_NAME,COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
+       AND ((TABLE_NAME='knowledge_documents' AND COLUMN_NAME='doc_id') OR (TABLE_NAME IN ('article_drafts','article_reactions','article_comments') AND COLUMN_NAME='article_id'))`);
+    const documentCollation = articleIdCollations.find(r => r.TABLE_NAME === 'knowledge_documents')?.COLLATION_NAME;
+    for (const table of ['article_drafts', 'article_reactions', 'article_comments']) {
+      const articleCollation = articleIdCollations.find(r => r.TABLE_NAME === table)?.COLLATION_NAME;
+      if (documentCollation && documentCollation !== articleCollation && /^utf8mb4_[a-z0-9_]+$/i.test(documentCollation)) {
+        await this.query(`ALTER TABLE ${table} MODIFY article_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE ${documentCollation} NOT NULL`);
+      }
+    }
     await this.dropColumnIfExists(
       'document_memory_profiles',
       'suppressed_keys',
@@ -249,11 +287,25 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       'memory_version',
       'ALTER TABLE document_memory_profiles DROP COLUMN memory_version',
     );
+    await this.query(
+      `UPDATE document_memory_jobs
+       SET dedupe_key=CONCAT(doc_id, ':', document_version)
+       WHERE dedupe_key IS NOT NULL`,
+    );
+    await this.dropColumnIfExists(
+      'document_memory_jobs',
+      'force_full',
+      'ALTER TABLE document_memory_jobs DROP COLUMN force_full',
+    );
     await this.ensureColumn(
       'knowledge_documents',
       'editor_content',
       'ALTER TABLE knowledge_documents ADD COLUMN editor_content JSON NULL AFTER url',
     );
+    await this.ensureColumn('knowledge_documents','category_id','ALTER TABLE knowledge_documents ADD COLUMN category_id VARCHAR(64) NULL');
+    await this.ensureColumn('knowledge_documents','deleted_at','ALTER TABLE knowledge_documents ADD COLUMN deleted_at DATETIME(6) NULL');
+    await this.ensureColumn('knowledge_documents','delete_batch_id','ALTER TABLE knowledge_documents ADD COLUMN delete_batch_id VARCHAR(64) NULL');
+    await this.ensureIndex('knowledge_documents','ix_documents_category','CREATE INDEX ix_documents_category ON knowledge_documents(space_id,owner_id,deleted_at,category_id)');
     await this.ensureColumn(
       'knowledge_documents',
       'source_import_id',

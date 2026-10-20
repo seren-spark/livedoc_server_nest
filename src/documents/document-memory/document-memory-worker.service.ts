@@ -41,13 +41,15 @@ export class DocumentMemoryWorkerService {
     if (!job) return false;
     try {
       //如果版本不一致，直接标记 superseded（过期作废），不浪费 LLM 调用。
-      const document = await this.documents.require(job.doc_id);
-      if (document.document_version !== job.document_version) {
+      const document = await this.documents.get(job.doc_id);
+      if (!document || document.deleted_at || document.document_version !== job.document_version) {
         await this.jobs.supersede(job);
         return true;
       }
+      //更新状态
       await this.profiles.markExtracting(document.doc_id);
       const previous = await this.profiles.get(document.doc_id);
+      //-----------markdown 切片----------------
       const chunks = chunkMarkdown(
         document.doc_id,
         document.title,
@@ -59,20 +61,19 @@ export class DocumentMemoryWorkerService {
       ).map(
         (chunk): MemoryChunk => ({
           hash: createHash("sha256")
-            .update(chunk.content)
+            .update(chunk.retrieval_content ?? chunk.content)
             .digest("hex")
             .slice(0, 32),
           anchor: chunk.source_anchor,
-          content: chunk.content,
+          content: chunk.retrieval_content ?? chunk.content,
         }),
       );
 
       const currentHashes = chunks.map((chunk) => chunk.hash);
       const previousHashes = new Set(previous?.source_chunk_hashes ?? []);
       const changed = chunks.filter((chunk) => !previousHashes.has(chunk.hash));
-      // 用户强制全量提取，或文档内容变化超过 50%），则全量提取。
+      // 首次提取，或文档内容变化超过 50%，则自动执行全量提取。
       const fullExtraction =
-        job.force_full ||
         !previous?.source_chunk_hashes.length ||
         changed.length / Math.max(chunks.length, 1) > 0.5;
       // 全量提取chunks或仅提取变化部分
@@ -80,9 +81,9 @@ export class DocumentMemoryWorkerService {
       // 从文档中提取术语表 风格标签 全局设置
       const extracted = await this.extractBatches(selected);
       // 第二次版本检查 + 写入记忆
-      const latest = await this.documents.require(job.doc_id);
+      const latest = await this.documents.get(job.doc_id);
       if (
-        latest.document_version !== job.document_version ||
+        !latest || latest.deleted_at || latest.document_version !== job.document_version ||
         !(await this.jobs.isActive(job))
       ) {
         await this.jobs.supersede(job);

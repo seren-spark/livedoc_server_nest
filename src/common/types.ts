@@ -48,6 +48,7 @@ export interface Citation {
   chunk_id: string;
   title: string;
   content: string;
+  source_content?: string;
   snippet: string;
   source_anchor: string;
   source_type: SourceType;
@@ -79,6 +80,14 @@ export type ImportStatus =
   | 'retry_wait'
   | 'failed'
   | 'canceled';
+
+export interface RetrievalDebug {
+  schema_version: 1;
+  candidate_stage: 'authorized_fused_before_rerank';
+  candidate_limit: 20;
+  candidates: Citation[];
+  ranked: Citation[];
+}
 
 export interface RetrievalTrace {
   trace_id: string;

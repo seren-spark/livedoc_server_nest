@@ -1,0 +1,757 @@
+{
+  "version": "quality-references-v1",
+  "annotation_status": "synthetic_curated",
+  "dataset_sha256": "bbb3b61fea446fdc6e0b5c289ea31ff5d760462d4e0b4b869b12e5a82ba25a08",
+  "corpus_sha256": "4481071a04ee82c78600bf9b3da74f31be9abe3550992c2cde621b3a9e06e7b9",
+  "note": "依据冻结原文整理；不是人工盲评结论。人工复核状态另行记录。",
+  "cases": {
+    "fact-01": {
+      "query": "RAG 权限过滤应该在召回前还是召回后执行？",
+      "expected_behavior": "answer",
+      "reference": "权限过滤在向量召回之前执行；权限由服务端执行。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "权限过滤在向量召回之前执行"
+        },
+        {
+          "id": "fact-2",
+          "text": "权限由服务端执行"
+        }
+      ]
+    },
+    "fact-02": {
+      "query": "为什么不能先搜全库再删掉无权内容？",
+      "expected_behavior": "answer",
+      "reference": "全库召回后再删除越权内容属于禁止的补救方式；未经授权内容可能经过中间组件、影响排序或诊断。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "全库召回后再删除越权内容属于禁止的补救方式"
+        },
+        {
+          "id": "fact-2",
+          "text": "未经授权内容可能经过中间组件、影响排序或诊断"
+        }
+      ]
+    },
+    "fact-03": {
+      "query": "权限载荷至少要保存哪些字段？",
+      "expected_behavior": "answer",
+      "reference": "载荷包含 space_id；载荷包含 owner_id；载荷包含 team_id；载荷包含 visibility；载荷包含 document_version；载荷包含 is_active。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "载荷包含 space_id"
+        },
+        {
+          "id": "fact-2",
+          "text": "载荷包含 owner_id"
+        },
+        {
+          "id": "fact-3",
+          "text": "载荷包含 team_id"
+        },
+        {
+          "id": "fact-4",
+          "text": "载荷包含 visibility"
+        },
+        {
+          "id": "fact-5",
+          "text": "载荷包含 document_version"
+        },
+        {
+          "id": "fact-6",
+          "text": "载荷包含 is_active"
+        }
+      ]
+    },
+    "fact-04": {
+      "query": "文档异步索引有哪些状态？",
+      "expected_behavior": "answer",
+      "reference": "索引状态包括 pending；索引状态包括 queued；索引状态包括 indexing；索引状态包括 ready；索引状态包括 failed。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "索引状态包括 pending"
+        },
+        {
+          "id": "fact-2",
+          "text": "索引状态包括 queued"
+        },
+        {
+          "id": "fact-3",
+          "text": "索引状态包括 indexing"
+        },
+        {
+          "id": "fact-4",
+          "text": "索引状态包括 ready"
+        },
+        {
+          "id": "fact-5",
+          "text": "索引状态包括 failed"
+        }
+      ]
+    },
+    "fact-05": {
+      "query": "新版本还没建好时旧索引怎么处理？",
+      "expected_behavior": "answer",
+      "reference": "新版本成功激活前，旧 active_index_version 继续提供检索。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "新版本成功激活前，旧 active_index_version 继续提供检索"
+        }
+      ]
+    },
+    "fact-06": {
+      "query": "修改正文对 document_version 有什么影响？",
+      "expected_behavior": "answer",
+      "reference": "更新正文会递增 document_version。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "更新正文会递增 document_version"
+        }
+      ]
+    },
+    "fact-07": {
+      "query": "排查一次 RAG 请求应记录哪些检索阶段数据？",
+      "expected_behavior": "answer",
+      "reference": "记录 trace_id 与查询变体；记录 Dense 和 Sparse 候选数、RRF 融合数及重排数；记录引用 doc_id、chunk_id 和 document_version；记录各阶段耗时；记录模型版本与索引版本。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "记录 trace_id 与查询变体"
+        },
+        {
+          "id": "fact-2",
+          "text": "记录 Dense 和 Sparse 候选数、RRF 融合数及重排数"
+        },
+        {
+          "id": "fact-3",
+          "text": "记录引用 doc_id、chunk_id 和 document_version"
+        },
+        {
+          "id": "fact-4",
+          "text": "记录各阶段耗时"
+        },
+        {
+          "id": "fact-5",
+          "text": "记录模型版本与索引版本"
+        }
+      ]
+    },
+    "fact-08": {
+      "query": "RAG trace 怎样追到具体出处版本？",
+      "expected_behavior": "answer",
+      "reference": "通过引用的 doc_id、chunk_id、document_version 定位具体出处版本；记录模型版本和索引版本以回溯当时运行条件。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "通过引用的 doc_id、chunk_id、document_version 定位具体出处版本"
+        },
+        {
+          "id": "fact-2",
+          "text": "记录模型版本和索引版本以回溯当时运行条件"
+        }
+      ]
+    },
+    "fact-09": {
+      "query": "可观测记录默认不该保存什么敏感内容？",
+      "expected_behavior": "answer",
+      "reference": "默认不保存完整 Prompt；默认不保存文档正文。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "默认不保存完整 Prompt"
+        },
+        {
+          "id": "fact-2",
+          "text": "默认不保存文档正文"
+        }
+      ]
+    },
+    "fact-10": {
+      "query": "固定 RAG 评测集包含哪些指标？",
+      "expected_behavior": "answer",
+      "reference": "评测包括 Recall@K 和 MRR；评测包括引用精度与事实覆盖率；评测包括无依据准确率与权限泄漏率。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "评测包括 Recall@K 和 MRR"
+        },
+        {
+          "id": "fact-2",
+          "text": "评测包括引用精度与事实覆盖率"
+        },
+        {
+          "id": "fact-3",
+          "text": "评测包括无依据准确率与权限泄漏率"
+        }
+      ]
+    },
+    "fact-11": {
+      "query": "首轮评测应该先追求漂亮分数吗？",
+      "expected_behavior": "answer",
+      "reference": "首轮运行建立真实基线，不预设漂亮数字。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "首轮运行建立真实基线，不预设漂亮数字"
+        }
+      ]
+    },
+    "fact-12": {
+      "query": "评测失败样例后续要怎么处理？",
+      "expected_behavior": "answer",
+      "reference": "失败样例需要人工复核。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "失败样例需要人工复核"
+        }
+      ]
+    },
+    "fact-13": {
+      "query": "那次检索延迟事故的直接原因是什么？",
+      "expected_behavior": "answer",
+      "reference": "批量索引占满 embedding worker，造成共享推理资源竞争。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "批量索引占满 embedding worker，造成共享推理资源竞争"
+        }
+      ]
+    },
+    "fact-14": {
+      "query": "检索延迟事件采取了哪些隔离措施？",
+      "expected_behavior": "answer",
+      "reference": "拆分索引队列与在线检索资源；单租户并发限制为4。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "拆分索引队列与在线检索资源"
+        },
+        {
+          "id": "fact-2",
+          "text": "单租户并发限制为4"
+        }
+      ]
+    },
+    "fact-15": {
+      "query": "事故中检索 P95 从多少升到多少？",
+      "expected_behavior": "answer",
+      "reference": "检索 P95 从180ms升至920ms。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "检索 P95 从180ms升至920ms"
+        }
+      ]
+    },
+    "fact-16": {
+      "query": "文档版本冲突时客户端应该怎么做？",
+      "expected_behavior": "answer",
+      "reference": "KB-409 表示文档版本冲突；客户端应刷新文档版本，不得直接覆盖。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "KB-409 表示文档版本冲突"
+        },
+        {
+          "id": "fact-2",
+          "text": "客户端应刷新文档版本，不得直接覆盖"
+        }
+      ]
+    },
+    "fact-17": {
+      "query": "索引 worker 暂时不可用对应什么错误？",
+      "expected_behavior": "answer",
+      "reference": "IDX-503 表示索引 worker 暂时不可用。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "IDX-503 表示索引 worker 暂时不可用"
+        }
+      ]
+    },
+    "fact-18": {
+      "query": "空间或团队权限不足如何标识？",
+      "expected_behavior": "answer",
+      "reference": "KB-403 表示空间或团队权限不足。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "KB-403 表示空间或团队权限不足"
+        }
+      ]
+    },
+    "fact-19": {
+      "query": "知识服务发布前必须通过哪些检查？",
+      "expected_behavior": "answer",
+      "reference": "后端单元测试需要通过；权限集成测试需要通过；固定评测回归需要通过；前端类型检查需要通过。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "后端单元测试需要通过"
+        },
+        {
+          "id": "fact-2",
+          "text": "权限集成测试需要通过"
+        },
+        {
+          "id": "fact-3",
+          "text": "固定评测回归需要通过"
+        },
+        {
+          "id": "fact-4",
+          "text": "前端类型检查需要通过"
+        }
+      ]
+    },
+    "fact-20": {
+      "query": "Recall@5 下降多少会阻止发布？",
+      "expected_behavior": "answer",
+      "reference": "Recall@5 相对基线下降超过3个百分点会阻止发布。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "Recall@5 相对基线下降超过3个百分点会阻止发布"
+        }
+      ]
+    },
+    "fact-21": {
+      "query": "权限泄漏指标达到什么条件才能发布？",
+      "expected_behavior": "answer",
+      "reference": "权限泄漏率必须为零才能发布。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "权限泄漏率必须为零才能发布"
+        }
+      ]
+    },
+    "fact-22": {
+      "query": "答案里的事实如何和来源关联？",
+      "expected_behavior": "answer",
+      "reference": "用方括号编号将事实与本次回答的引用关联。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "用方括号编号将事实与本次回答的引用关联"
+        }
+      ]
+    },
+    "fact-23": {
+      "query": "引用卡片应该展示什么？",
+      "expected_behavior": "answer",
+      "reference": "引用卡片展示标题、匹配片段和原文链接；保留 chunk_id 和文档版本。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "引用卡片展示标题、匹配片段和原文链接"
+        },
+        {
+          "id": "fact-2",
+          "text": "保留 chunk_id 和文档版本"
+        }
+      ]
+    },
+    "fact-24": {
+      "query": "引用很多是否自然代表答案可靠？",
+      "expected_behavior": "answer",
+      "reference": "引用数量多不代表答案可信；引用必须实际支持对应结论。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "引用数量多不代表答案可信"
+        },
+        {
+          "id": "fact-2",
+          "text": "引用必须实际支持对应结论"
+        }
+      ]
+    },
+    "exact-01": {
+      "query": "INC-714 发生在哪一天？",
+      "expected_behavior": "answer",
+      "reference": "INC-714 发生于2026年6月18日。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "INC-714 发生于2026年6月18日"
+        }
+      ]
+    },
+    "exact-02": {
+      "query": "KB-409 是什么意思？",
+      "expected_behavior": "answer",
+      "reference": "KB-409 表示文档版本冲突。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "KB-409 表示文档版本冲突"
+        }
+      ]
+    },
+    "exact-03": {
+      "query": "IDX-503 的处理对象是什么？",
+      "expected_behavior": "answer",
+      "reference": "IDX-503 针对索引 worker 暂时不可用。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "IDX-503 针对索引 worker 暂时不可用"
+        }
+      ]
+    },
+    "exact-04": {
+      "query": "Alpha worker 的租约秒数是多少？",
+      "expected_behavior": "answer",
+      "reference": "Alpha worker 默认租约为900秒。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "Alpha worker 默认租约为900秒"
+        }
+      ]
+    },
+    "exact-05": {
+      "query": "Alpha 最后由 reranker 取多少条？",
+      "expected_behavior": "answer",
+      "reference": "Alpha 通过 BGE reranker 取前8条。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "Alpha 通过 BGE reranker 取前8条"
+        }
+      ]
+    },
+    "exact-06": {
+      "query": "CAP-BETA-27 的向量点上限是多少？",
+      "expected_behavior": "answer",
+      "reference": "CAP-BETA-27 的向量集合上限为2400万点。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "CAP-BETA-27 的向量集合上限为2400万点"
+        }
+      ]
+    },
+    "exact-07": {
+      "query": "ORCHID-19 的审计计划时间是什么？",
+      "expected_behavior": "answer",
+      "reference": "ORCHID-19 计划在2026年9月完成权限审计。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "ORCHID-19 计划在2026年9月完成权限审计"
+        }
+      ]
+    },
+    "exact-08": {
+      "query": "Bob 的 chunk overlap 是多少？",
+      "expected_behavior": "answer",
+      "reference": "Bob 暂定的 overlap 为80 tokens。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "Bob 暂定的 overlap 为80 tokens"
+        }
+      ]
+    },
+    "exact-09": {
+      "query": "5000 个节点优化后达到多少 FPS？",
+      "expected_behavior": "answer",
+      "reference": "5000个节点优化后交互帧率达到55 FPS。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "5000个节点优化后交互帧率达到55 FPS"
+        }
+      ]
+    },
+    "exact-10": {
+      "query": "Carol 访谈了多少名编辑用户？",
+      "expected_behavior": "answer",
+      "reference": "Carol 访谈了12名编辑用户。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "Carol 访谈了12名编辑用户"
+        }
+      ]
+    },
+    "multi-01": {
+      "query": "怎样同时保证索引更新期间可用并能追踪到版本？",
+      "expected_behavior": "answer",
+      "reference": "更新正文递增 document_version，新版本激活前旧 active_index_version 继续检索；记录 trace_id、引用 doc_id、chunk_id 和 document_version；记录模型版本与索引版本。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "更新正文递增 document_version，新版本激活前旧 active_index_version 继续检索"
+        },
+        {
+          "id": "fact-2",
+          "text": "记录 trace_id、引用 doc_id、chunk_id 和 document_version"
+        },
+        {
+          "id": "fact-3",
+          "text": "记录模型版本与索引版本"
+        }
+      ]
+    },
+    "multi-02": {
+      "query": "RAG 发布门禁应结合哪些离线质量与安全指标？",
+      "expected_behavior": "answer",
+      "reference": "离线质量检查包括 Recall@K、MRR、引用精度与事实覆盖率；检查无依据准确率及权限泄漏率，权限泄漏必须为零；Recall@5 相对基线下降超过3个百分点时阻止发布。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "离线质量检查包括 Recall@K、MRR、引用精度与事实覆盖率"
+        },
+        {
+          "id": "fact-2",
+          "text": "检查无依据准确率及权限泄漏率，权限泄漏必须为零"
+        },
+        {
+          "id": "fact-3",
+          "text": "Recall@5 相对基线下降超过3个百分点时阻止发布"
+        }
+      ]
+    },
+    "multi-03": {
+      "query": "Alpha 的召回链路和索引重试策略分别是什么？",
+      "expected_behavior": "answer",
+      "reference": "Alpha 采用 Dense top30 与 BM25 top30 双路召回，经过 RRF 融合；由 BGE reranker 取前8条；索引失败按30秒、2分钟、10分钟退避，最多尝试3次。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "Alpha 采用 Dense top30 与 BM25 top30 双路召回，经过 RRF 融合"
+        },
+        {
+          "id": "fact-2",
+          "text": "由 BGE reranker 取前8条"
+        },
+        {
+          "id": "fact-3",
+          "text": "索引失败按30秒、2分钟、10分钟退避，最多尝试3次"
+        }
+      ]
+    },
+    "multi-04": {
+      "query": "Beta 发布安排和内部容量预算分别是什么？",
+      "expected_behavior": "answer",
+      "reference": "Beta 每周三16:00发布，负责人为Carol，回滚窗口为20分钟；Beta 向量集合上限为2400万点，月度推理预算为6800元。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "Beta 每周三16:00发布，负责人为Carol，回滚窗口为20分钟"
+        },
+        {
+          "id": "fact-2",
+          "text": "Beta 向量集合上限为2400万点，月度推理预算为6800元"
+        }
+      ]
+    },
+    "multi-05": {
+      "query": "Alice 写作偏好和项目审计计划是什么？",
+      "expected_behavior": "answer",
+      "reference": "Alice 偏好先给结论、再列三条证据、最后写下一步行动；Alice 避免使用“赋能”和“抓手”；Alice 的项目计划于2026年9月完成权限审计。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "Alice 偏好先给结论、再列三条证据、最后写下一步行动"
+        },
+        {
+          "id": "fact-2",
+          "text": "Alice 避免使用“赋能”和“抓手”"
+        },
+        {
+          "id": "fact-3",
+          "text": "Alice 的项目计划于2026年9月完成权限审计"
+        }
+      ]
+    },
+    "multi-06": {
+      "query": "Bob 的 Canvas 优化结果和文档分块参数是什么？",
+      "expected_behavior": "answer",
+      "reference": "Bob 使用 OffscreenCanvas 与分帧调度，将5000个节点的交互帧率从31 FPS提升到55 FPS；Bob 暂定 chunk 500 tokens、overlap 80 tokens；代码块不得从中间截断，标题路径写入 payload。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "Bob 使用 OffscreenCanvas 与分帧调度，将5000个节点的交互帧率从31 FPS提升到55 FPS"
+        },
+        {
+          "id": "fact-2",
+          "text": "Bob 暂定 chunk 500 tokens、overlap 80 tokens"
+        },
+        {
+          "id": "fact-3",
+          "text": "代码块不得从中间截断，标题路径写入 payload"
+        }
+      ]
+    },
+    "multi-07": {
+      "query": "一次可追溯回答既要记录什么 trace 信息，又要怎样展示引用？",
+      "expected_behavior": "answer",
+      "reference": "记录 trace_id、查询变体、Dense/Sparse候选数、RRF融合数、重排数和各阶段耗时；记录引用 doc_id、chunk_id、document_version，以及模型版本和索引版本；答案用方括号编号关联来源；引用卡片展示标题、匹配片段、原文链接并保留 chunk_id 和文档版本。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "记录 trace_id、查询变体、Dense/Sparse候选数、RRF融合数、重排数和各阶段耗时"
+        },
+        {
+          "id": "fact-2",
+          "text": "记录引用 doc_id、chunk_id、document_version，以及模型版本和索引版本"
+        },
+        {
+          "id": "fact-3",
+          "text": "答案用方括号编号关联来源"
+        },
+        {
+          "id": "fact-4",
+          "text": "引用卡片展示标题、匹配片段、原文链接并保留 chunk_id 和文档版本"
+        }
+      ]
+    },
+    "multi-08": {
+      "query": "如何通过资源隔离和发布门禁防止性能回归上线？",
+      "expected_behavior": "answer",
+      "reference": "拆分索引队列与在线检索资源，限制单租户并发为4；发布前通过后端单元测试、权限集成测试、固定评测回归和前端类型检查；Recall@5 相对基线下降超过3个百分点或权限泄漏不为零时阻止发布。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "拆分索引队列与在线检索资源，限制单租户并发为4"
+        },
+        {
+          "id": "fact-2",
+          "text": "发布前通过后端单元测试、权限集成测试、固定评测回归和前端类型检查"
+        },
+        {
+          "id": "fact-3",
+          "text": "Recall@5 相对基线下降超过3个百分点或权限泄漏不为零时阻止发布"
+        }
+      ]
+    },
+    "no-evidence-01": {
+      "query": "公司 2027 年春节假期安排是什么？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "no-evidence-02": {
+      "query": "LiveDoc 的 iOS 最低支持版本是多少？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "no-evidence-03": {
+      "query": "生产数据库 root 密码是什么？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "no-evidence-04": {
+      "query": "团队食堂今天有什么菜？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "no-evidence-05": {
+      "query": "Bob 明年的旅行目的地是哪？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "no-evidence-06": {
+      "query": "Beta 团队 2028 年预算是多少？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "no-evidence-07": {
+      "query": "INC-999 的根因是什么？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "no-evidence-08": {
+      "query": "KB-777 应该如何恢复？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "permission-01": {
+      "query": "Alice 的 ORCHID-19 项目什么时候审计？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "permission-02": {
+      "query": "Alice 私人写作偏好是什么？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "permission-03": {
+      "query": "Bob 的 Canvas 优化到了多少 FPS？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "permission-04": {
+      "query": "Bob 的分块 overlap 参数是多少？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "permission-05": {
+      "query": "Carol 访谈中多少人担心越权？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "permission-06": {
+      "query": "Alpha worker 的重试间隔是什么？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "permission-07": {
+      "query": "Beta 内部月度推理预算是多少？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "permission-08": {
+      "query": "Beta 每周什么时候发布，负责人是谁？",
+      "expected_behavior": "abstain",
+      "reference": "当前授权资料没有问题所需依据，应说明无法作答，不编造答案或泄露其他范围内容。",
+      "required_facts": []
+    },
+    "permission-09": {
+      "query": "Alice 自己的私人项目代号是什么？",
+      "expected_behavior": "answer",
+      "reference": "Alice 自己的未公开项目代号是 ORCHID-19。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "Alice 自己的未公开项目代号是 ORCHID-19"
+        }
+      ]
+    },
+    "permission-10": {
+      "query": "Beta 团队的回滚窗口多长？",
+      "expected_behavior": "answer",
+      "reference": "Beta 团队回滚窗口为20分钟。",
+      "required_facts": [
+        {
+          "id": "fact-1",
+          "text": "Beta 团队回滚窗口为20分钟"
+        }
+      ]
+    }
+  }
+}

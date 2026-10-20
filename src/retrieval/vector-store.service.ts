@@ -21,6 +21,15 @@ export class VectorStoreService implements OnModuleInit {
     string,
     { vector: number[]; sparse?: SparseEmbedding; payload: Record<string, any> }
   >();
+
+  async deactivateVersionsBefore(docId: string, version: number): Promise<void> {
+    if (this.config.vectorStore === 'qdrant') {
+      await this.qdrant.setPayload(this.config.qdrantCollection, { wait: true, payload: { is_active: false },
+        filter: { must: [{ key: 'doc_id', match: { value: docId } }, { key: 'document_version', range: { lt: version } }] } });
+    } else for (const point of this.points.values()) {
+      if (point.payload.doc_id === docId && point.payload.document_version < version) point.payload.is_active = false;
+    }
+  }
   private readonly qdrant: QdrantClient;
 
   constructor(
@@ -308,7 +317,8 @@ export function buildPayload(
     visibility: document.visibility,
     source_type: document.source_type,
     title: document.title,
-    content: chunk.content,
+    content: chunk.retrieval_content ?? chunk.content,
+    source_content: chunk.content,
     heading_path: chunk.heading_path,
     chunk_index: chunk.chunk_index,
     ordinal: chunk.ordinal,

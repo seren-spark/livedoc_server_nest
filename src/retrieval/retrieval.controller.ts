@@ -18,29 +18,29 @@ export class RetrievalController {
   @Post('search')
   @HttpCode(HttpStatus.OK)
   async search(@Body() request: SearchDto, @CurrentAccess() context: AccessContext) {
-    const started = performance.now();
-    let variants = [request.query];
-    let source: 'original' | 'llm' | 'fallback' = 'original';
-    if (this.config.queryExpansionEnabled && this.llm.isConfigured) {
+    const preprocessingStarted = performance.now();
+    let queryVariants = [request.query];
+    let expansionSource: 'original' | 'llm' | 'fallback' = 'original';
+    if (request.expand_query !== false && this.config.queryExpansionEnabled && this.llm.isConfigured) {
       try {
-        variants = normalizeQueryVariants(
+        queryVariants = normalizeQueryVariants(
           request.query,
           await this.llm.expandQueries(request.query, request.context, this.config.queryExpansionMaxVariants),
           true,
           this.config.queryExpansionMaxVariants,
         );
-        source = variants.length > 1 ? 'llm' : 'fallback';
+        expansionSource = queryVariants.length > 1 ? 'llm' : 'fallback';
       } catch {
-        source = 'fallback';
+        expansionSource = 'fallback';
       }
     }
-    const result = await this.retrieval.searchWithTrace(
+    const searchResult = await this.retrieval.searchWithTrace(
       request,
       context,
-      variants,
-      source,
-      performance.now() - started,
+      queryVariants,
+      expansionSource,
+      performance.now() - preprocessingStarted,
     );
-    return { query: request.query, ...result };
+    return { query: request.query, ...searchResult };
   }
 }

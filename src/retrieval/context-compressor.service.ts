@@ -3,6 +3,7 @@ import { getEncoding, type Tiktoken } from "js-tiktoken";
 import type { Citation } from "../common/types.js";
 import { AppConfig } from "../config/app-config.js";
 import { tokenizeKeyword } from "./text-utils.js";
+import { markdownCompressionUnits } from "./chunker.js";
 
 @Injectable()
 export class ContextCompressorService {
@@ -47,41 +48,34 @@ export class ContextCompressorService {
    * @returns 压缩后的内容
    */
   extractRelevant(content: string, query: string, tokenBudget: number): string {
-    // ① 把 content 按句号/问号/感叹号分成句子数组
-    const sentences = splitSentences(content);
-    if (!sentences.length || tokenBudget <= 0) return "";
+    if (tokenBudget <= 0 || !content.trim()) return "";
+    if (this.count(content) <= tokenBudget) return content;
+    // Reuse structure boundaries with the generation model's tokenizer.
+    const units = markdownCompressionUnits(content, tokenBudget, (text) => this.count(text));
+    if (!units.length) return "";
     // ② 提取 query 关键词
     const queryTerms = new Set(tokenizeKeyword(query));
     // ③ 对每个句子打分
-    const candidates = sentences.map((text, index) => ({
-      text,
+    const candidates = units.map((unit, index) => ({
+      ...unit,
       index,
-      score: sentenceScore(text, queryTerms, index),
+      score: sentenceScore(unit.text, queryTerms, index),
     }));
     // ④ 按分数降序排序（分数相同按原文顺序）
     candidates.sort((a, b) => b.score - a.score || a.index - b.index);
     // ⑤ 贪心选择（在 token 预算内）
     const selected: typeof candidates = [];
-    let used = 0;
+    const assemble = (items: typeof candidates) => [...items].sort((a, b) => a.index - b.index)
+      .map((item) => item.text).join("\n\n");
     for (const candidate of candidates) {
-      const count = this.count(candidate.text); // 当前句子的 token 数
-      const separator = selected.length ? 1 : 0; // 分隔符 " … " 占 1 token
-      // 特殊情况：第一个句子就超预算，截断
-      if (!selected.length && count > tokenBudget) {
-        return this.truncate(candidate.text, tokenBudget);
-      }
-      // 能放下就加入
-      if (used + count + separator <= tokenBudget) {
+      // Count the actual assembled text, including separators.
+      if (this.count(assemble([...selected, candidate])) <= tokenBudget) {
         selected.push(candidate);
-        used += count + separator;
       }
-      if (used >= tokenBudget) break;
     }
-    // ⑥ 按原文顺序拼接（保持可读性）
-    return selected
-      .sort((a, b) => a.index - b.index)
-      .map((item) => item.text)
-      .join(" … ");
+    if (selected.length) return assemble(selected);
+    const plain = candidates.find((candidate) => !candidate.atomic);
+    return plain ? this.truncate(plain.text, tokenBudget) : "";
   }
 
   count(text: string): number {

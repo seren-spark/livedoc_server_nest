@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { ArticleRepository } from '../articles/article.repository.js';
 import type { IndexJobRecord } from './index-job.types.js';
 import { IndexJobsService } from './index-jobs.service.js';
 import { DocumentsService } from '../documents/documents.service.js';
@@ -14,16 +15,17 @@ export class IndexWorkerService {
     private readonly retrieval: RetrievalService,
     private readonly store: VectorStoreService,
     private readonly config: AppConfig,
+    @Optional() private readonly articleDrafts?: ArticleRepository,
   ) {}
   /**
    * 索引工作线程一次运行
    * @param workerId 工作线程 ID
    * @returns 索引任务记录
    */
-  async runOnce(workerId: string): Promise<IndexJobRecord | null> {
+  async runOnce(workerId: string, targetJobId?: string): Promise<IndexJobRecord | null> {
     //抢占任务， 调用 claimNext 从 index_jobs 表抢一个任务。
     // 没抢到直接返回，外层 worker.ts 会 sleep 后再试。
-    const job = await this.jobs.claimNext(workerId);
+    const job = await this.jobs.claimNext(workerId, targetJobId);
     if (!job) return null;
     const heartbeat = setInterval(
       () => void this.jobs.heartbeat(job.job_id, workerId, job.generation),
@@ -40,14 +42,14 @@ export class IndexWorkerService {
       //文档已经被删了。但任务里可能还有快照，保险起见：
       //1.deleteDocumentVersion删除 Qdrant 里该版本 points
       //2.supersede(job.job_id) ：把任务标记为 superseded （被替代/失效），不是 failed 。
-      if (!current) {
+      if (!current || current.deleted_at) {
         await this.store.deleteDocumentVersion(job.doc_id, job.document_version);
         return this.jobs.supersede(job.job_id, workerId, job.generation);
       }
       //如果不相等，说明用户已经更新过文档，产生了新版本。这个旧任务不需要执行，直接 supersede
-      if (current.document_version !== job.document_version) return this.jobs.supersede(job.job_id, workerId, job.generation);
+      if (current.document_version !== job.document_version || (this.articleDrafts && !(await this.articleDrafts.eligible(job.doc_id, job.document_version)))) return this.jobs.supersede(job.job_id, workerId, job.generation);
       //把文档的 index_status 从 queued 改成 indexing ，让前端轮询看到"正在索引"。
-      await this.documents.markIndexing(job.doc_id);
+      await this.documents.markIndexing(job.doc_id, job.document_version);
       //job.request_payload ：任务入队时的文档快照（title/content/visibility 等）。
       // 第二个参数 false ：表示 只写入 Qdrant，不激活 。即这些 points 的 is_active 是 false，检索时不会命中。
       // retrieval.indexDocument 内部会做：
@@ -60,7 +62,7 @@ export class IndexWorkerService {
       //如果文档不存在了，或者版本又不一致了（说明索引过程中用户又更新了），那么：
       // 1. deleteDocumentVersion ：删掉刚才写入的、未激活的 points，避免占用空间和被误激活。
       // 2. supersede ：任务标记失效。
-      if (!latest || latest.document_version !== job.document_version) {
+      if (!latest || latest.deleted_at || latest.document_version !== job.document_version || (this.articleDrafts && !(await this.articleDrafts.eligible(job.doc_id, job.document_version)))) {
         await this.store.deleteDocumentVersion(job.doc_id, job.document_version);
         return this.jobs.supersede(job.job_id, workerId, job.generation);
       }
@@ -69,13 +71,24 @@ export class IndexWorkerService {
         return this.jobs.get(job.job_id);
       }
       //两次检查都通过，正式把该版本的 points 标记为 is_active=true ，同时让旧版本 points 失活。
-      await this.store.activateDocumentVersion(job.doc_id, job.document_version);
+      const activate = async (manager?: import('typeorm').EntityManager) => {
+        await this.store.activateDocumentVersion(job.doc_id, job.document_version);
+        await this.documents.markReady(job.doc_id, chunkCount, job.document_version,manager);
+      };
+      const activated = await this.documents.activateCurrent(job.doc_id, job.document_version, async manager => {
+        if (this.articleDrafts && !(await this.articleDrafts.eligible(job.doc_id, job.document_version))) return;
+        await activate(manager);
+      });
+      if (!activated) {
+        await this.store.deleteDocumentVersion(job.doc_id, job.document_version);
+        return this.jobs.supersede(job.job_id, workerId, job.generation);
+      }
       //更新文档状态：
       //index_status = 'ready'  active_index_version = job.document_version
       //chunk_count = chunkCount   indexed_at = now
-      await this.documents.markReady(job.doc_id, chunkCount, job.document_version);
       return this.jobs.succeed(job.job_id, workerId, job.generation);
     } catch (error) {
+      if(!(await this.jobs.get(job.job_id))) return null;
       const updated = await this.jobs.fail(
         job.job_id,
         describeWorkerError(error),

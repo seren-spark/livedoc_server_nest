@@ -60,11 +60,11 @@ export class PersistentJobStore<TJob extends PersistentJobRecord> {
     return rows[0] ? this.options.mapRow(rows[0]) : null;
   }
 
-  async claimNext(workerId: string): Promise<TJob | null> {
+  async claimNext(workerId: string, targetJobId?: string): Promise<TJob | null> {
     const now = new Date();
     if (!this.options.enabled()) {
       const candidate = [...this.options.jobs.values()]
-        .filter((job) => isClaimable(job, now))
+        .filter((job) => isClaimable(job, now) && (!targetJobId || job.job_id === targetJobId))
         .sort((a, b) => a.created_at.getTime() - b.created_at.getTime())[0];
       if (!candidate) return null;
       const claimed = {
@@ -84,10 +84,10 @@ export class PersistentJobStore<TJob extends PersistentJobRecord> {
       const rows = (await manager.query(
         `SELECT * FROM ${this.options.tableName}
          WHERE
-           (status IN ('queued','retry_wait') AND (next_run_at IS NULL OR next_run_at <= ?))
-           OR (status='running' AND lease_expires_at <= ?)
+           ((status IN ('queued','retry_wait') AND (next_run_at IS NULL OR next_run_at <= ?))
+           OR (status='running' AND lease_expires_at <= ?))${targetJobId ? ' AND job_id=?' : ''}
          ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED`,
-        [now, now],
+        [now, now, ...(targetJobId ? [targetJobId] : [])],
       )) as Record<string, unknown>[];
       const row = rows[0];
       if (!row) return null;

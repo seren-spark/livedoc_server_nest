@@ -41,7 +41,9 @@ export class DocumentImportsController {
 
   @Get('document-imports/:import_id')
   async get(@Param('import_id') importId: string, @CurrentAccess() context: AccessContext) {
-    const record = await this.imports.require(importId); this.imports.assertOwner(record, context); return record;
+    const record = await this.imports.require(importId); this.imports.assertOwner(record, context);
+    if(record.document_id) await this.documents.getAccessible(record.document_id,context);
+    return record;
   }
 
   @Patch('document-imports/:import_id')

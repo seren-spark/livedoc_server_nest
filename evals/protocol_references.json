@@ -1,0 +1,23 @@
+{
+  "version": "protocol-references-v1",
+  "annotation_status": "synthetic_curated",
+  "note": "为合成验收资料编写的参考答案，正式业务题集仍需业务人员复核。",
+  "cases": {
+    "protocol-plan": {
+      "query": "任务规划做什么，确认计划前是否会修改正文？",
+      "reference": "任务规划把用户目标拆成有依赖关系的步骤。只生成计划不会修改正文，必须等用户确认后才能执行。"
+    },
+    "protocol-reflection": {
+      "query": "反思检查什么，最多修正几次？",
+      "reference": "反思检查缺失要求与事实依据，最多修正一次。"
+    },
+    "protocol-cross": {
+      "query": "结合规划和反思资料，说明如何拆解目标、检查结果，并说明修改是否自动保存。",
+      "reference": "任务规划先把目标拆成有依赖关系的步骤；执行按计划读取资料和调用工具；反思检查缺失要求与事实依据，最多修正一次。候选修改必须由用户采纳，不能自动保存正文。"
+    },
+    "protocol-owner": {
+      "query": "Bob 自己的合成测试项目代号是什么？",
+      "reference": "Bob 的合成测试项目代号是 EVAL-NOVA-27。"
+    }
+  }
+}

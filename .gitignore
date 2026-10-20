@@ -5,4 +5,6 @@ coverage/
 .env
 data/
 evals/results/
+evals/.venv/
+__pycache__/
 *.log

@@ -1,0 +1,29 @@
+{
+  "version": "livedoc-synthetic-rerank-v1",
+  "cases": [
+    { "id": "permission", "query": "为什么权限过滤必须发生在向量召回之前？", "items": [
+      { "id": "p0", "title": "UI 过滤", "text": "前端可按标题隐藏知识库列表中的条目。", "relevance": 0 },
+      { "id": "p1", "title": "权限下推", "text": "向量召回之前必须按空间、所有者和团队权限过滤，否则未授权正文可能先进入模型上下文。", "relevance": 2 },
+      { "id": "p2", "title": "权限字段", "text": "知识文档载荷包含 space_id、owner_id、team_id 与 visibility。", "relevance": 1 },
+      { "id": "p3", "title": "向量距离", "text": "余弦相似度衡量向量方向的接近程度。", "relevance": 0 }
+    ] },
+    { "id": "review", "query": "Agent 生成修改后怎样避免直接覆盖用户正文？", "items": [
+      { "id": "r0", "title": "自动保存", "text": "本地已编辑内容由草稿自动保存机制保存。", "relevance": 1 },
+      { "id": "r1", "title": "缓存", "text": "接口缓存能降低重复请求的耗时。", "relevance": 0 },
+      { "id": "r2", "title": "候选采纳", "text": "Agent 只返回修改建议，必须预览并由用户明确采纳后才能应用到正文。", "relevance": 2 },
+      { "id": "r3", "title": "事务", "text": "数据库事务失败时应回滚。", "relevance": 0 }
+    ] },
+    { "id": "index", "query": "索引过程中正文再次更新，旧索引任务应该怎样处理？", "items": [
+      { "id": "i0", "title": "版本核验", "text": "Worker 在索引开始和激活前校验 document_version；版本已变化则旧任务标为 superseded，不激活旧结果。", "relevance": 2 },
+      { "id": "i1", "title": "排队", "text": "索引请求创建一个异步队列任务。", "relevance": 1 },
+      { "id": "i2", "title": "照片格式", "text": "网页图片可以采用 PNG 或 WebP。", "relevance": 0 },
+      { "id": "i3", "title": "批处理", "text": "批量嵌入可以提升模型吞吐量。", "relevance": 0 }
+    ] },
+    { "id": "restore", "query": "从回收站恢复分类子项时，需要恢复哪些祖先和兄弟分支？", "items": [
+      { "id": "t0", "title": "删除确认", "text": "彻底删除需要确认对象和数量。", "relevance": 0 },
+      { "id": "t1", "title": "目录深度", "text": "个人分类最多支持三级。", "relevance": 1 },
+      { "id": "t2", "title": "批量恢复", "text": "批量恢复应在同一用户空间的事务内完成。", "relevance": 1 },
+      { "id": "t3", "title": "恢复范围", "text": "恢复子分类时仅带回必要祖先链，不恢复祖先下无关的兄弟分支。", "relevance": 2 }
+    ] }
+  ]
+}

@@ -8,6 +8,7 @@ import { AssetsService } from './assets.service.js';
 import { DocumentsService } from '../documents.service.js';
 import { DocumentImportsService } from '../../document-imports/document-imports.service.js';
 import { VisionService } from '../../document-imports/vision.service.js';
+import { ArticleRepository } from '../../articles/article.repository.js';
 
 @Controller()
 export class AssetsController {
@@ -16,6 +17,7 @@ export class AssetsController {
     private readonly documents: DocumentsService,
     private readonly imports: DocumentImportsService,
     private readonly vision: VisionService,
+    private readonly articleDrafts: ArticleRepository,
   ) {}
 
   @Post('assets')
@@ -40,7 +42,8 @@ export class AssetsController {
   @Get('assets/:asset_id/content')
   async content(@Param('asset_id') assetId: string, @CurrentAccess() context: AccessContext) {
     const asset = await this.assets.require(assetId);
-    if (asset.doc_id) await this.documents.getAccessible(asset.doc_id, context);
+    if (asset.doc_id && await this.articleDrafts.get(asset.doc_id)) await this.articleDrafts.requireOwner(asset.doc_id, context);
+    else if (asset.doc_id) await this.documents.getAccessible(asset.doc_id, context);
     else this.assets.assertOwner(asset, context);
     return new StreamableFile(await this.assets.open(asset), {
       type: asset.mime_type,

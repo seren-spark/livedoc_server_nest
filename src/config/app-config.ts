@@ -113,6 +113,23 @@ export class AppConfig {
   readonly summarySafetyRatio = Number(process.env.SUMMARY_SAFETY_RATIO ?? 0.15);
   readonly summaryMapInputTokens = Number(process.env.SUMMARY_MAP_INPUT_TOKENS ?? 6000);
   readonly llmToolCallExtraBody = jsonObjectEnv('LLM_TOOL_CALL_EXTRA_BODY');
+  readonly documentAgentEnabled = boolEnv('DOCUMENT_AGENT_ENABLED', true);
+  readonly workspaceEnabled = boolEnv('WORKSPACE_ENABLED', true);
+  readonly mcpEnabled = boolEnv('MCP_ENABLED', false);
+  readonly mcpServers = jsonObjectEnv('MCP_SERVERS');
+  // Explicit deployment configuration: native DashScope search also returns source metadata.
+  readonly agentWebSearchUrl = process.env.AGENT_WEB_SEARCH_URL ?? '';
+  readonly agentWebSearchModel = process.env.AGENT_WEB_SEARCH_MODEL || this.llmModel;
+  readonly thinkingSupported = boolEnv('AGENT_THINKING_SUPPORTED', false);
+  readonly agentSettingsEncryptionKey = process.env.AGENT_SETTINGS_ENCRYPTION_KEY ?? '';
+  readonly thinkingOnBody = jsonObjectEnv('AGENT_THINKING_ON_BODY');
+  readonly thinkingOffBody = jsonObjectEnv('AGENT_THINKING_OFF_BODY');
+  readonly agentClassifierModel = process.env.AGENT_CLASSIFIER_MODEL || this.llmModel;
+  readonly agentPlanModel = process.env.AGENT_PLAN_MODEL || this.llmModel;
+  readonly agentCriticModel = process.env.AGENT_CRITIC_MODEL || this.llmModel;
+  readonly agentTimeoutSeconds = Number(process.env.AGENT_TIMEOUT_SECONDS ?? 300);
+  readonly agentMaxToolCalls = Number(process.env.AGENT_MAX_TOOL_CALLS ?? 12);
+  readonly agentMaxOutputTokens = Number(process.env.AGENT_MAX_OUTPUT_TOKENS ?? 4096);
   readonly memoryStore = process.env.MEMORY_STORE ?? this.metadataStore;
   readonly memoryMaxMessages = Number(process.env.MEMORY_MAX_MESSAGES ?? 12);
   readonly memoryMaxTurns = Number(process.env.MEMORY_MAX_TURNS ?? 6);
@@ -178,6 +195,15 @@ export class AppConfig {
       llm_provider: this.llmProvider,
       llm_model: this.llmModel,
       llm_tool_call_extra_body: this.llmToolCallExtraBody,
+      llm_base_url: this.llmBaseUrl,
+      context_token_budget: this.contextTokenBudget,
+      context_per_citation_tokens: this.contextPerCitationTokens,
+      tokenizer_encoding: this.tokenizerEncoding,
+      similarity_threshold: this.similarityThreshold,
+      rerank_top_n: this.rerankTopN,
+      query_expansion_enabled: this.queryExpansionEnabled,
+      query_expansion_max_variants: this.queryExpansionMaxVariants,
+      agent_tool_selection: this.agentToolSelection,
       storage_provider: this.storageProvider,
       docling_python: this.doclingPython,
       docling_script: this.doclingScript,

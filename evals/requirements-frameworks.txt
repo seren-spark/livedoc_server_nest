@@ -1,0 +1,6 @@
+# Offline evaluation only; production NestJS dependencies remain separate.
+evalscope[rag]==1.13.0
+mteb==2.26.12
+ragas==0.4.3
+# RAGAS 0.4.3 still imports VertexAI from this package; 0.4.2 removed that module.
+langchain-community==0.4.1

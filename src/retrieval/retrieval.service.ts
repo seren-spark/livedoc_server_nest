@@ -1,10 +1,14 @@
-import { Injectable } from "@nestjs/common";
+import { prepareEmbeddingChunks } from './embedding-chunks.js';
+import { Injectable, Optional } from "@nestjs/common";
+import { ArticleRepository } from '../articles/article.repository.js';
+import { DocumentCatalog } from '../database/document-catalog.js';
 import { randomUUID } from "node:crypto";
 import type { SearchDto } from "../common/dto.js";
 import type {
   AccessContext,
   Citation,
   RetrievalTrace,
+  RetrievalDebug,
 } from "../common/types.js";
 import { AppConfig } from "../config/app-config.js";
 import type { DocumentIndexRequest } from "../documents/document.types.js";
@@ -33,22 +37,24 @@ export class RetrievalService {
     private readonly reranker: RerankerService,
     private readonly compressor: ContextCompressorService,
     private readonly observability: ObservabilityService,
+    @Optional() private readonly articleDrafts?: ArticleRepository,
+    @Optional() private readonly catalog?: DocumentCatalog,
   ) {}
 
   async indexDocument(
     document: DocumentIndexRequest,
     activate = true,
   ): Promise<number> {
-    const { chunks, passages: texts } = await this.prepareChunksForEmbedding(
+    const { chunks, passages } = await this.prepareChunksForEmbedding(
       document.doc_id,
       document.title,
       document.content,
     );
     //生成 Dense 向量。 vectors 是 number[][] ，每个 passage 对应一个稠密向量。
-    const vectors = await this.embeddings.embedBatch(texts);
+    const vectors = await this.embeddings.embedBatch(passages);
     //生成 Sparse 向量。 sparseVectors 是 SparseEmbedding[]
     //这里是 同步 调用（没有 await），因为 Sparse 是本地基于词频计算的，不需要模型推理。
-    const sparseVectors = texts.map((text) => this.sparse.embedDocument(text));
+    const sparseVectors = passages.map((passage) => this.sparse.embedDocument(passage));
     //把 chunks、Dense 向量、Sparse 向量一起写入 Qdrant
     await this.store.upsertChunks(
       document,
@@ -74,52 +80,53 @@ export class RetrievalService {
     queryVariants?: string[],
     expansionSource: ExpansionSource = "original",
     preprocessingMs = 0,
-  ): Promise<{ citations: Citation[]; trace: RetrievalTrace }> {
+  ): Promise<{ citations: Citation[]; trace: RetrievalTrace; retrieval_debug?: RetrievalDebug }> {
     const totalStarted = performance.now();
     //prepareQueryVariants（查询变体准备）
-    const queries = prepareQueryVariants(
+    const preparedQueryVariants = prepareQueryVariants(
       request.query,
       request.context,
       queryVariants,
     );
-    const rewritten = queries[0] ?? request.query;
+    const rewrittenQuery = preparedQueryVariants[0] ?? request.query;
     const retrievalStarted = performance.now();
     //多查询检索
-    const { dense, keyword, candidates } = await this.retrieveMultiQuery(
+    const { denseHits, keywordHits, candidateHits } = await this.retrieveMultiQuery(
       request,
       context,
-      queries,
+      preparedQueryVariants,
     );
     const retrievalMs = elapsedMs(retrievalStarted);
+    const readableCandidates = this.catalog ? await this.catalog.readableHits(candidateHits, context) : candidateHits;
     const rerankStarted = performance.now();
     //rerank 精排
-    const reranked = await this.reranker.rerank(
-      rewritten,
-      candidates,
+    const rerankedHits = request.rerank === false ? readableCandidates : await this.reranker.rerank(
+      rewrittenQuery,
+      readableCandidates,
       this.config.rerankTopN,
     );
     const rerankMs = elapsedMs(rerankStarted);
     //去重
-    const deduped = dedupeHits(reranked);
+    const dedupedHits = dedupeHits(this.articleDrafts ? await this.articleDrafts.filterHits(rerankedHits) : rerankedHits);
     //转换为 Citation
-    const raw = deduped
+    const uncompressedCitations = dedupedHits
       .slice(0, request.top_k)
       .map((hit, index) => hitToCitation(index + 1, hit));
     const compressionStarted = performance.now();
     //压缩上下文
-    const citations = this.compressor.compress(raw, rewritten);
+    const citations = this.compressor.compress(uncompressedCitations, rewrittenQuery);
     const trace: RetrievalTrace = {
       trace_id: randomUUID().replaceAll("-", ""),
       mode: request.mode,
-      rewritten_query: rewritten,
-      query_variants: queries,
+      rewritten_query: rewrittenQuery,
+      query_variants: preparedQueryVariants,
       expansion_source: expansionSource,
-      expansion_enabled: queries.length > 1,
-      dense_candidates: dense.length,
-      keyword_candidates: keyword.length,
-      fused_candidates: candidates.length,
-      reranked_candidates: Math.min(candidates.length, this.config.rerankTopN),
-      deduped_candidates: deduped.length,
+      expansion_enabled: preparedQueryVariants.length > 1,
+      dense_candidates: denseHits.length,
+      keyword_candidates: keywordHits.length,
+      fused_candidates: candidateHits.length,
+      reranked_candidates: request.rerank === false ? 0 : Math.min(readableCandidates.length, this.config.rerankTopN),
+      deduped_candidates: dedupedHits.length,
       returned_citations: citations.length,
       retrieval_ms: retrievalMs,
       rerank_ms: rerankMs,
@@ -133,6 +140,15 @@ export class RetrievalService {
       request.query,
       citations,
     );
+    if (request.include_retrieval_debug) {
+      // Apply the same publication boundary as final citations before exposing diagnostics.
+      const eligible = this.articleDrafts ? await this.articleDrafts.filterHits(readableCandidates) : readableCandidates;
+      return { citations, trace, retrieval_debug: {
+        schema_version: 1, candidate_stage: 'authorized_fused_before_rerank', candidate_limit: 20,
+        candidates: eligible.slice(0, 20).map((hit, index) => hitToCitation(index + 1, hit)),
+        ranked: uncompressedCitations,
+      } };
+    }
     return { citations, trace };
   }
 
@@ -149,18 +165,18 @@ export class RetrievalService {
   }): Promise<{ citations: Citation[]; trace: RetrievalTrace }> {
     const totalStarted = performance.now();
 
-    const queries = prepareQueryVariants(
+    const preparedQueryVariants = prepareQueryVariants(
       options.query,
       options.contextText ?? "",
       options.queryVariants,
     );
-    const rewritten = queries[0] ?? options.query;
+    const rewrittenQuery = preparedQueryVariants[0] ?? options.query;
     const traceId = randomUUID().replaceAll("-", "");
     if (!options.content.trim()) {
       const trace = emptyTrace(
         traceId,
-        rewritten,
-        queries,
+        rewrittenQuery,
+        preparedQueryVariants,
         options.expansionSource,
         options.preprocessingMs,
         totalStarted,
@@ -190,7 +206,8 @@ export class RetrievalService {
         visibility: "private",
         source_type: "current_document",
         title: options.title || "当前打开文档",
-        content: chunk.content,
+        content: chunk.retrieval_content ?? chunk.content,
+        source_content: chunk.content,
         heading_path: chunk.heading_path,
         chunk_index: chunk.chunk_index,
         ordinal: chunk.ordinal,
@@ -208,9 +225,9 @@ export class RetrievalService {
     const candidateLimit = Math.max((options.topK ?? 5) * 4, 20);
     const denseRankings: SearchHit[][] = [];
     const keywordRankings: SearchHit[][] = [];
-    for (const variant of queries) {
-      const queryVector = await this.embeddings.embed(variant);
-      const dense = payloads
+    for (const queryVariant of preparedQueryVariants) {
+      const queryVector = await this.embeddings.embed(queryVariant);
+      const denseHits = payloads
         .map((payload) => ({
           pointId: payload.chunk_id,
           score: cosineSimilarity(queryVector, payload.vector),
@@ -219,49 +236,49 @@ export class RetrievalService {
         .filter((hit) => hit.score >= this.config.similarityThreshold)
         .sort((a, b) => b.score - a.score)
         .slice(0, candidateLimit);
-      denseRankings.push(dense);
+      denseRankings.push(denseHits);
       keywordRankings.push(
         bm25Search(
-          variant,
+          queryVariant,
           payloads.map((payload) => [payload.chunk_id, payload] as const),
           candidateLimit,
           this.sparse,
         ),
       );
     }
-    const denseUnique = mergeRankingsUnique(denseRankings);
-    const keywordUnique = mergeRankingsUnique(keywordRankings);
-    const candidates = rrfFuseMany([
+    const denseHits = mergeRankingsUnique(denseRankings);
+    const keywordHits = mergeRankingsUnique(keywordRankings);
+    const candidateHits = rrfFuseMany([
       ...denseRankings.map((hits) => ["dense", hits] as const),
       ...keywordRankings.map((hits) => ["keyword", hits] as const),
     ]);
     const retrievalMs = elapsedMs(retrievalStarted);
     const rerankStarted = performance.now();
-    const reranked = await this.reranker.rerank(
-      rewritten,
-      candidates,
+    const rerankedHits = await this.reranker.rerank(
+      rewrittenQuery,
+      candidateHits,
       this.config.rerankTopN,
     );
     const rerankMs = elapsedMs(rerankStarted);
-    const deduped = dedupeHits(reranked);
-    const raw = deduped
+    const dedupedHits = dedupeHits(rerankedHits);
+    const uncompressedCitations = dedupedHits
       .slice(0, options.topK ?? 5)
       .map((hit, index) => hitToCitation(index + 1, hit));
     const compressionStarted = performance.now();
-    const citations = this.compressor.compress(raw, rewritten);
+    const citations = this.compressor.compress(uncompressedCitations, rewrittenQuery);
     const preprocessingMs = options.preprocessingMs ?? 0;
     const trace: RetrievalTrace = {
       trace_id: traceId,
       mode: "hybrid",
-      rewritten_query: rewritten,
-      query_variants: queries,
+      rewritten_query: rewrittenQuery,
+      query_variants: preparedQueryVariants,
       expansion_source: options.expansionSource ?? "original",
-      expansion_enabled: queries.length > 1,
-      dense_candidates: denseUnique.length,
-      keyword_candidates: keywordUnique.length,
-      fused_candidates: candidates.length,
-      reranked_candidates: Math.min(candidates.length, this.config.rerankTopN),
-      deduped_candidates: deduped.length,
+      expansion_enabled: preparedQueryVariants.length > 1,
+      dense_candidates: denseHits.length,
+      keyword_candidates: keywordHits.length,
+      fused_candidates: candidateHits.length,
+      reranked_candidates: Math.min(candidateHits.length, this.config.rerankTopN),
+      deduped_candidates: dedupedHits.length,
       returned_citations: citations.length,
       retrieval_ms: retrievalMs,
       rerank_ms: rerankMs,
@@ -283,28 +300,28 @@ export class RetrievalService {
    * 多查询召回
    * @param request 搜索请求
    * @param context 上下文
-   * @param queries 多个查询变体（原始查询 + 改写/扩展的查询）
+   * @param preparedQueryVariants 多个查询变体（原始查询 + 改写/扩展的查询）
    * @returns 合并后的召回结果
    */
   private async retrieveMultiQuery(
     request: SearchDto,
     context: AccessContext,
-    queries: string[], // 多个查询变体（原始查询 + 改写/扩展的查询）
+    preparedQueryVariants: string[], // 多个查询变体（原始查询 + 改写/扩展的查询）
   ) {
     const denseRankings: SearchHit[][] = []; // 存储每路 Dense 召回结果
     const keywordRankings: SearchHit[][] = []; // 存储每路 Sparse 召回结果
-    const limit = Math.max(request.top_k * 4, 20); // 多召回一些，后续再裁剪
+    const candidateLimit = Math.max(request.top_k * 4, 20); // 多召回一些，后续再裁剪
     // 对每个查询变体分别执行两路召回
-    for (const query of queries) {
+    for (const queryVariant of preparedQueryVariants) {
       // Dense 召回：语义相似度
       if (request.mode === "dense" || request.mode === "hybrid") {
         denseRankings.push(
           // 检索 Dense 召回结果
           await this.store.search(
-            await this.embeddings.embed(query), // 先计算查询向量
+            await this.embeddings.embed(queryVariant), // 先计算查询向量
             context,
             request.scope,
-            limit,
+            candidateLimit,
             this.config.similarityThreshold,
           ),
         );
@@ -313,11 +330,11 @@ export class RetrievalService {
       if (request.mode === "keyword" || request.mode === "hybrid") {
         keywordRankings.push(
           await this.store.keywordSearch(
-            query,
-            this.sparse.embedQuery(query), // 计算查询的稀疏向量
+            queryVariant,
+            this.sparse.embedQuery(queryVariant), // 计算查询的稀疏向量
             context,
             request.scope,
-            limit,
+            candidateLimit,
           ),
         );
       }
@@ -333,9 +350,9 @@ export class RetrievalService {
               ...keywordRankings.map((hits) => ["keyword", hits] as const),
             ];
     return {
-      dense: mergeRankingsUnique(denseRankings), // 合并所有 Dense 结果
-      keyword: mergeRankingsUnique(keywordRankings), // 合并所有 Sparse 结果
-      candidates: rrfFuseMany(rankings), // RRF 融合
+      denseHits: mergeRankingsUnique(denseRankings), // 合并所有 Dense 结果
+      keywordHits: mergeRankingsUnique(keywordRankings), // 合并所有 Sparse 结果
+      candidateHits: rrfFuseMany(rankings), // RRF 融合
     };
   }
   /**
@@ -350,78 +367,37 @@ export class RetrievalService {
     title: string,
     content: string,
   ): Promise<{ chunks: ReturnType<typeof chunkMarkdown>; passages: string[] }> {
-    let planningBudget = this.config.chunkMaxTokens;
-
-    for (let attempt = 1; attempt <= 5; attempt += 1) {
-      const chunks = chunkMarkdown(docId, title, content, {
-        maxTokens: planningBudget,
-        overlapTokens: Math.min(
-          this.config.chunkOverlapTokens,
-          Math.max(0, planningBudget - 1),
-        ),
-      });
-      /**
-       * passages = [
-              "title: RAG 学习笔记\npath: RAG 学习笔记 > 检索 > Dense\nDense 负责语义召回，使用 BGE 模型生成向量。",
-              "title: RAG 学习笔记\npath: RAG 学习笔记 > 检索 > Sparse\nSparse 负责词项匹配，擅长精确命中。"
-            ]       
-       */
-      //把每个 chunk 转换成最终传给 embedding 模型的文本
-      const passages = chunks.map(buildChunkPassage);
-      const actualCounts = await this.embeddings.countTokens(passages);
-      if (actualCounts.length !== passages.length) {
-        throw new Error(
-          `Embedding tokenizer returned ${actualCounts.length} counts for ${passages.length} passages`,
-        );
-      }
-
-      const largest = Math.max(0, ...actualCounts);
-      if (largest <= this.config.chunkMaxTokens) {
-        chunks.forEach((chunk, index) => {
-          chunk.token_count = actualCounts[index] ?? 0;
-        });
-        return { chunks, passages };
-      }
-
-      const scaled = Math.floor(
-        planningBudget * (this.config.chunkMaxTokens / largest) * 0.92,
-      );
-      planningBudget = Math.max(64, Math.min(planningBudget - 16, scaled));
-    }
-
-    throw new Error(
-      `Unable to keep embedding passages within CHUNK_MAX_TOKENS=${this.config.chunkMaxTokens}; check title/heading metadata or reduce CHUNK_MAX_TOKENS`,
-    );
+    return prepareEmbeddingChunks(docId, title, content, this.config, this.embeddings);
   }
 }
 
 /**
  * 查询变体准备
- * @param original 原始查询
- * @param _context 上下文（未使用）
- * @param variants 变体查询
+ * @param originalQuery 原始查询
+ * @param _contextText 上下文（未使用）
+ * @param queryVariants 变体查询
  * @return string[]  去重后的查询变体列表
  */
 export function prepareQueryVariants(
-  original: string,
-  _context: string,
-  variants?: string[],
+  originalQuery: string,
+  _contextText: string,
+  queryVariants?: string[],
 ): string[] {
   //最终返回的 query 列表
-  const result: string[] = [];
+  const preparedQueryVariants: string[] = [];
   //用于去重的集合（小写后的 key）
   const seen = new Set<string>();
-
-  for (const candidate of [original, ...(variants ?? [])]) {
+  //把原问题放在最前面，再接上变体查询
+  for (const queryVariant of [originalQuery, ...(queryVariants ?? [])]) {
     //转字符串 → 去首尾空格 → 连续空格压缩为单个
-    const normalized = String(candidate).trim().replace(/\s+/g, " ");
+    const normalizedQuery = String(queryVariant).trim().replace(/\s+/g, " ");
     //小写化用于去重判断
-    const key = normalized.toLocaleLowerCase();
-    if (!normalized || seen.has(key)) continue;
+    const key = normalizedQuery.toLocaleLowerCase();
+    if (!normalizedQuery || seen.has(key)) continue;
     seen.add(key);
-    result.push(normalized);
+    preparedQueryVariants.push(normalizedQuery);
   }
-  return result.length ? result : [original.trim()];
+  return preparedQueryVariants.length ? preparedQueryVariants : [originalQuery.trim()];
 }
 
 /**
@@ -531,7 +507,8 @@ function hitToCitation(index: number, hit: SearchHit): Citation {
     chunk_id: String(payload.chunk_id),
     title: String(payload.title),
     content: String(payload.content ?? ""),
-    snippet: String(payload.content ?? "").slice(0, 320),
+    source_content: String(payload.source_content ?? payload.content ?? ""),
+    snippet: String(payload.source_content ?? payload.content ?? "").slice(0, 320),
     source_anchor: String(
       payload.source_anchor ?? `chunk-${String(payload.chunk_id)}`,
     ),
@@ -542,7 +519,8 @@ function hitToCitation(index: number, hit: SearchHit): Citation {
     dense_score: payload.dense_score ?? null,
     keyword_score: payload.keyword_score ?? null,
     rerank_score: payload.rerank_score ?? null,
-    url: payload.url ?? null,
+    url: payload.visibility === 'public' && ['article', 'public_article'].includes(payload.source_type)
+      ? `/post/${String(payload.doc_id)}` : payload.url ?? null,
     heading_path: [...(payload.heading_path ?? [])],
     chunk_index: payload.chunk_index ?? null,
     space_id: String(payload.space_id),
@@ -558,19 +536,19 @@ function hitToCitation(index: number, hit: SearchHit): Citation {
 
 function emptyTrace(
   traceId: string,
-  rewritten: string,
-  queries: string[],
-  source: ExpansionSource = "original",
+  rewrittenQuery: string,
+  preparedQueryVariants: string[],
+  expansionSource: ExpansionSource = "original",
   preprocessingMs = 0,
   totalStarted?: number,
 ): RetrievalTrace {
   return {
     trace_id: traceId,
     mode: "hybrid",
-    rewritten_query: rewritten,
-    query_variants: queries,
-    expansion_source: source,
-    expansion_enabled: queries.length > 1,
+    rewritten_query: rewrittenQuery,
+    query_variants: preparedQueryVariants,
+    expansion_source: expansionSource,
+    expansion_enabled: preparedQueryVariants.length > 1,
     dense_candidates: 0,
     keyword_candidates: 0,
     fused_candidates: 0,

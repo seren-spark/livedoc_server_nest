@@ -3,13 +3,100 @@ import type { AiWriteDto } from "../common/dto.js";
 import { AppConfig } from "../config/app-config.js";
 import type { ExtractedDocumentMemory } from '../documents/document-memory/document-memory.types.js';
 import { createLlmTool, LlmToolName } from './llm-tools.js';
+import type { AgentMessage, FunctionTool } from './document-agent.types.js';
 
 @Injectable()
 export class LlmService {
+  // Reasoning exists only during a tool conversation, never in serialized messages, memory or audit.
+  private readonly reasoning = new WeakMap<AgentMessage, string>();
   constructor(private readonly config: AppConfig) {}
 
   get isConfigured(): boolean {
     return Boolean(this.config.llmApiKey);
+  }
+
+  async agentTurn(messages: AgentMessage[], tools: FunctionTool[], signal?: AbortSignal,
+    options: { role?: 'main' | 'classifier' | 'plan' | 'critic'; thinking?: boolean; thinkingBody?: Record<string, unknown>; json?: boolean; maxTokens?: number } = {}): Promise<{ message: AgentMessage; usage: any; thinkingDetected?: boolean }> {
+    const model = options.role === 'classifier' ? this.config.agentClassifierModel : options.role === 'plan'
+      ? this.config.agentPlanModel : options.role === 'critic' ? this.config.agentCriticModel : this.config.llmModel;
+    const main = !options.role || options.role === 'main';
+    const thinking = main && options.thinkingBody ? options.thinkingBody : this.config.thinkingSupported
+      ? (options.thinking && (!options.role || options.role === 'main') ? this.config.thinkingOnBody : this.config.thinkingOffBody) : {};
+    const extra = { ...this.config.llmToolCallExtraBody };
+    if (main && options.thinkingBody) { delete extra.enable_thinking; delete extra.reasoning_effort; }
+    const history = messages.map(message => this.reasoning.has(message) && options.thinking && main
+      ? { ...message, reasoning_content: this.reasoning.get(message) } : message);
+    const data = await this.request({ ...extra, ...thinking, model, messages: history,
+      ...(tools.length ? { tools, tool_choice: main && options.thinking ? 'auto' : 'required', parallel_tool_calls: false } : {}),
+      ...(options.json ? { response_format: { type: 'json_object' } } : {}),
+      temperature: 0.2, stream: false, max_tokens: options.maxTokens ?? this.config.agentMaxOutputTokens }, signal);
+    const message = data.choices?.[0]?.message;
+    if (!message) throw new Error('模型没有返回有效内容');
+    const result = { role: 'assistant' as const, content: message.content ?? null, ...(message.tool_calls ? {tool_calls: message.tool_calls} : {}) } as AgentMessage;
+    if (typeof message.reasoning_content === 'string') this.reasoning.set(result, message.reasoning_content);
+    return { message: result, usage: data.usage ?? {},
+      thinkingDetected: Boolean(message.reasoning_content?.trim() || Number(data.usage?.completion_tokens_details?.reasoning_tokens) > 0) };
+  }
+
+  get webSearchConfigured(): boolean {
+    return this.isConfigured && Boolean(this.config.agentWebSearchUrl);
+  }
+
+  async searchWeb(query: string, signal?: AbortSignal) {
+    this.ensureConfigured();
+    if (!this.webSearchConfigured) throw new Error('联网搜索尚未配置');
+    const response = await fetch(this.config.agentWebSearchUrl, {
+      method: 'POST', redirect: 'error', headers: this.headers,
+      signal: AbortSignal.any([AbortSignal.timeout(25000), ...(signal ? [signal] : [])]),
+      body: JSON.stringify({ model: this.config.agentWebSearchModel,
+        input: { messages: [{ role: 'user', content: [{ text: query }] }] },
+        parameters: { enable_thinking: false, enable_search: true, result_format: 'message', max_tokens: 1800,
+          search_options: { forced_search: true, enable_source: true, enable_citation: true } } }),
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`联网搜索服务请求失败（${response.status}）`);
+    }
+    const data = await response.json() as any;
+    const sources: Array<{ index: number; title: string; url: string; content?: string }> = [];
+    for (const source of data.output?.search_info?.search_results ?? []) {
+      try {
+        const url = new URL(source.url);
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) continue;
+        if (sources.some(s => s.url === url.href)) continue;
+        const content = typeof source.snippet === 'string' ? source.snippet
+          : typeof source.content === 'string' ? source.content : undefined;
+        sources.push({ index: source.index, title: String(source.title ?? url.hostname).slice(0, 300), url: url.href,
+          ...(content?.trim() ? { content: content.slice(0, 12000) } : {}) });
+      } catch { /* Ignore malformed provider source metadata. */ }
+      if (sources.length >= 10) break;
+    }
+    // Do not invent citations from URLs in model prose, or pass an ungrounded answer off as search.
+    if (!sources.length) throw new Error('联网搜索未返回可追溯来源，请调整关键词后重试');
+    const content = data.output?.choices?.[0]?.message?.content;
+    const summary = (typeof content === 'string' ? content : Array.isArray(content)
+      ? content.map((part: { text?: string }) => part.text ?? '').join('\n') : '').slice(0, 12000);
+    return { summary, sources };
+  }
+
+  async verifyThinking(on: Record<string, unknown>, off: Record<string, unknown>, signal: AbortSignal) {
+    const tools: FunctionTool[] = [{ type: 'function', function: { name: 'report_result', description: '提交计算结果',
+      parameters: { type: 'object', properties: { answer: { type: 'number' } }, required: ['answer'], additionalProperties: false } } }];
+    const messages: AgentMessage[] = [{ role: 'user', content: '计算 (17 * 23) - (19 * 7)，使用 report_result 提交数值。' }];
+    for (const enabled of [true, false]) {
+      const result = await this.agentTurn(messages, tools, signal, { thinking: enabled, thinkingBody: enabled ? on : off, maxTokens: enabled ? 2048 : 256 });
+      const call = result.message.tool_calls?.[0];
+      if (call?.function.name !== 'report_result' || JSON.parse(call.function.arguments).answer !== 258)
+        throw new Error('THINKING_TOOL_UNSUPPORTED');
+      if (enabled && !result.thinkingDetected) throw new Error('THINKING_UNCONFIRMED');
+      if (!enabled && result.thinkingDetected) throw new Error('THINKING_OFF_UNCONFIRMED');
+      if (enabled) {
+        const next = await this.agentTurn([...messages, result.message, { role: 'tool', tool_call_id: call.id, content: '结果正确。现在计算 6 * 7 并再次提交。' }], tools, signal,
+          { thinking: true, thinkingBody: on, maxTokens: 1024 });
+        if (next.message.tool_calls?.[0]?.function.name !== 'report_result' || JSON.parse(next.message.tool_calls[0].function.arguments).answer !== 42)
+          throw new Error('THINKING_TOOL_UNSUPPORTED');
+      }
+    }
   }
 
   async complete(

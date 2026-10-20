@@ -203,7 +203,7 @@ export class DocumentSummaryService {
       });
       if (
         chunks.every((chunk, index) =>
-          this.tokenizer.count(chunk.content) <= safeMapBudget &&
+          this.tokenizer.count(chunk.retrieval_content ?? chunk.content) <= safeMapBudget &&
           this.promptFits(
             buildMapPrompt({ title, content: '', instruction }, chunk, index, chunks.length),
             SUMMARY_MAP_OUTPUT_TOKENS,
@@ -321,7 +321,7 @@ function buildMapPrompt(
     '### 章节主题\n### 核心要点\n### 结论\n### 示例\n### 注意事项',
     '没有对应内容时写“未提及”，不要省略字段。',
     '<document_section>',
-    chunk.content,
+    chunk.retrieval_content ?? chunk.content,
     '</document_section>',
   ].join('\n');
 }

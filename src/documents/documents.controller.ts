@@ -33,6 +33,8 @@ import { publicAsset } from "./assets/asset.types.js";
 import { DocumentMemoryJobsService } from "./document-memory/document-memory-jobs.service.js";
 import { DocumentMemoryService } from "./document-memory/document-memory.service.js";
 import { ConversationMemoryService } from "../ai/memory.service.js";
+import { ArticlesService } from '../articles/articles.service.js';
+import { WorkspaceService } from '../workspace/workspace.service.js';
 
 @Controller()
 export class DocumentsController {
@@ -45,6 +47,8 @@ export class DocumentsController {
     private readonly memoryJobs: DocumentMemoryJobsService,
     private readonly documentMemory: DocumentMemoryService,
     private readonly conversationMemory: ConversationMemoryService,
+    private readonly articles: ArticlesService,
+    private readonly workspace: WorkspaceService,
   ) {}
 
   // 创建知识文档：保存正文 + 按需发起异步索引任务
@@ -95,6 +99,7 @@ export class DocumentsController {
       query.page_size,
       {
         q: query.q,
+        category_id: query.category_id,
         visibility: query.visibility,
         source_type: query.source_type,
         tag: query.tag,
@@ -123,7 +128,7 @@ export class DocumentsController {
     return {
       ...result,
       items: await Promise.all(
-        result.items.map((record) => this.withAssets(record)),
+        result.items.map((record) => this.articles.publicRecord(record)),
       ),
       page: query.page,
       page_size: query.page_size,
@@ -133,7 +138,7 @@ export class DocumentsController {
   @Public()
   @Get("public/articles/:doc_id")
   async getPublicArticle(@Param("doc_id") docId: string) {
-    return this.withAssets(await this.documents.getPublicArticle(docId));
+    return this.articles.publicRecord(await this.documents.getPublicArticle(docId));
   }
 
   @Get("documents/:doc_id")
@@ -178,6 +183,8 @@ export class DocumentsController {
     @Param("doc_id") docId: string,
     @CurrentAccess() context: AccessContext,
   ) {
+    const record=await this.documents.get(docId);
+    if (record?.visibility==='private') return {status:'trashed',doc_id:docId,...await this.workspace.trashDocumentById(context,docId)};
     await this.documents.getWritable(docId, context);
     await this.jobs.cancelDocument(docId);
     await this.store.deleteDocument(docId);
@@ -313,6 +320,11 @@ export class DocumentsController {
     };
   }
 
+  /**
+   * 队列文档记忆提取
+   * @param record 文档记录
+   * @param context 访问上下文
+   */
   private async queueDocumentMemory(
     record: Awaited<ReturnType<DocumentsService["require"]>>,
     context: AccessContext,

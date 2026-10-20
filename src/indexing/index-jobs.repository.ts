@@ -1,6 +1,7 @@
-import { DatabaseService } from '../database/database.service.js';
-import type { DocumentIndexRequest } from '../documents/document.types.js';
-import type { IndexJobRecord } from './index-job.types.js';
+import { DatabaseService } from "../database/database.service.js";
+import type { DocumentIndexRequest } from "../documents/document.types.js";
+import type { IndexJobRecord } from "./index-job.types.js";
+import type { EntityManager } from "typeorm";
 
 const JOB_COLUMNS = `job_id,doc_id,document_version,generation,status,attempts,max_attempts,
   requested_by,space_id,request_payload,config_fingerprint,dedupe_key,worker_id,
@@ -9,55 +10,66 @@ const JOB_COLUMNS = `job_id,doc_id,document_version,generation,status,attempts,m
 export class IndexJobsRepository {
   constructor(private readonly database: DatabaseService) {}
 
-  async enqueue(job: IndexJobRecord): Promise<IndexJobRecord> {
+  async enqueue(
+    job: IndexJobRecord,
+    transactionManager?: EntityManager,
+  ): Promise<IndexJobRecord> {
+    if (transactionManager) return this.insert(job, transactionManager);
     try {
-      return await this.database.transaction(async (manager) => {
-        const duplicate = (await manager.query(
-          `SELECT ${JOB_COLUMNS} FROM index_jobs WHERE dedupe_key=? LIMIT 1 FOR UPDATE`,
-          [job.dedupe_key],
-        )) as Record<string, unknown>[];
-        if (duplicate[0]) return mapIndexJob(duplicate[0]);
-
-        const generations = (await manager.query(
-          `SELECT COALESCE(MAX(generation),0) AS generation FROM index_jobs
-           WHERE doc_id=? AND document_version=?`,
-          [job.doc_id, job.document_version],
-        )) as Array<{ generation: number | string }>;
-        const next = {
-          ...job,
-          generation: Number(generations[0]?.generation ?? 0) + 1,
-        };
-        await manager.query(
-          `INSERT INTO index_jobs
-            (job_id,doc_id,document_version,generation,status,attempts,max_attempts,
-             requested_by,space_id,request_payload,config_fingerprint,dedupe_key,
-             next_run_at,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [
-            next.job_id,
-            next.doc_id,
-            next.document_version,
-            next.generation,
-            next.status,
-            next.attempts,
-            next.max_attempts,
-            next.requested_by,
-            next.space_id,
-            JSON.stringify(next.request_payload),
-            next.config_fingerprint,
-            next.dedupe_key,
-            next.next_run_at,
-            next.created_at,
-            next.updated_at,
-          ],
-        );
-        return next;
-      });
+      return await this.database.transaction((manager) =>
+        this.insert(job, manager),
+      );
     } catch (error) {
       const duplicate = await this.findByDedupeKey(job.dedupe_key);
       if (duplicate) return duplicate;
       throw error;
     }
+  }
+
+  private async insert(
+    job: IndexJobRecord,
+    manager: EntityManager,
+  ): Promise<IndexJobRecord> {
+    const duplicate = (await manager.query(
+      `SELECT ${JOB_COLUMNS} FROM index_jobs WHERE dedupe_key=? LIMIT 1 FOR UPDATE`,
+      [job.dedupe_key],
+    )) as Record<string, unknown>[];
+    if (duplicate[0]) return mapIndexJob(duplicate[0]);
+
+    const generations = (await manager.query(
+      `SELECT COALESCE(MAX(generation),0) AS generation FROM index_jobs
+           WHERE doc_id=? AND document_version=?`,
+      [job.doc_id, job.document_version],
+    )) as Array<{ generation: number | string }>;
+    const next = {
+      ...job,
+      generation: Number(generations[0]?.generation ?? 0) + 1,
+    };
+    await manager.query(
+      `INSERT INTO index_jobs
+            (job_id,doc_id,document_version,generation,status,attempts,max_attempts,
+             requested_by,space_id,request_payload,config_fingerprint,dedupe_key,
+             next_run_at,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [
+        next.job_id,
+        next.doc_id,
+        next.document_version,
+        next.generation,
+        next.status,
+        next.attempts,
+        next.max_attempts,
+        next.requested_by,
+        next.space_id,
+        JSON.stringify(next.request_payload),
+        next.config_fingerprint,
+        next.dedupe_key,
+        next.next_run_at,
+        next.created_at,
+        next.updated_at,
+      ],
+    );
+    return next;
   }
 
   async listByDocument(docId: string): Promise<IndexJobRecord[]> {
@@ -68,7 +80,9 @@ export class IndexJobsRepository {
     return rows.map(mapIndexJob);
   }
 
-  private async findByDedupeKey(dedupeKey: string | null): Promise<IndexJobRecord | null> {
+  private async findByDedupeKey(
+    dedupeKey: string | null,
+  ): Promise<IndexJobRecord | null> {
     const rows = await this.database.query<Record<string, unknown>>(
       `SELECT ${JOB_COLUMNS} FROM index_jobs WHERE dedupe_key=? LIMIT 1`,
       [dedupeKey],
@@ -78,9 +92,9 @@ export class IndexJobsRepository {
 }
 
 function parsePayload(value: unknown): DocumentIndexRequest {
-  return typeof value === 'string'
-    ? JSON.parse(value) as DocumentIndexRequest
-    : value as DocumentIndexRequest;
+  return typeof value === "string"
+    ? (JSON.parse(value) as DocumentIndexRequest)
+    : (value as DocumentIndexRequest);
 }
 
 export function mapIndexJob(row: Record<string, unknown>): IndexJobRecord {
@@ -91,7 +105,7 @@ export function mapIndexJob(row: Record<string, unknown>): IndexJobRecord {
     doc_id: String(row.doc_id),
     document_version: Number(row.document_version),
     generation: Number(row.generation),
-    status: row.status as IndexJobRecord['status'],
+    status: row.status as IndexJobRecord["status"],
     attempts: Number(row.attempts),
     max_attempts: Number(row.max_attempts),
     requested_by: String(row.requested_by),

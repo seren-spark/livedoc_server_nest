@@ -85,6 +85,10 @@ export class AuthService implements OnModuleInit {
     } else this.sessions.delete(tokenHash);
   }
 
+  async publicName(userId: string): Promise<string> {
+    return (await this.identityByUserId(userId))?.username ?? 'LiveDoc 用户';
+  }
+
   private seedMemory(): void {
     for (const [userId, username, email, spaceId, teamIds] of DEMO_USERS) {
       this.users.set(email, {

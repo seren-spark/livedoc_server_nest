@@ -80,7 +80,11 @@ export class AssetsService {
   }
 
   async link(assetIds: string[], docId: string, context: AccessContext): Promise<void> {
-    for (const id of new Set(assetIds)) this.assertOwner(await this.require(id), context);
+    for (const id of new Set(assetIds)) {
+      const asset = await this.require(id);
+      this.assertOwner(asset, context);
+      if (asset.doc_id && asset.doc_id !== docId) throw new ForbiddenException('Asset already belongs to another document.');
+    }
     if (!assetIds.length) return;
     if (this.database.importJobsEnabled) {
       await this.repository.link(assetIds, docId);
@@ -110,6 +114,17 @@ export class AssetsService {
     );
     for (const asset of stale) this.assertOwner(asset, context);
     await this.removeAssets(stale);
+  }
+
+  async removeIds(ids: string[], context: AccessContext): Promise<void> {
+    const assets = [];
+    for (const id of ids) {
+      const asset = await this.get(id);
+      if (!asset) continue;
+      this.assertOwner(asset, context);
+      assets.push(asset);
+    }
+    await this.removeAssets(assets);
   }
 
   async reconcileImport(importId: string, desiredIds: string[], context: AccessContext): Promise<void> {

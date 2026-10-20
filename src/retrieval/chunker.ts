@@ -1,12 +1,6 @@
 import { createHash } from "node:crypto";
-//mdast 类型，表示语法树根节点的子节点类型
-import type { RootContent } from "mdast";
-//将 Markdown 文本解析为 mdast（Markdown Abstract Syntax Tree） 语法树
-import { fromMarkdown } from "mdast-util-from-markdown";
-//mdast-util 层面的 GFM 扩展，将 micromark 解析出的 GFM token 转换为 mdast 节点
-import { gfmFromMarkdown } from "mdast-util-gfm";
-//micromark 层面的 GFM 扩展，让解析器识别表格、删除线、任务列表、自动链接等 GFM 语法
-import { gfm } from "micromark-extension-gfm";
+import { codeRanges, OversizedCodeError } from "./code-boundaries.js";
+import { parseMarkdown, protectedRanges, sentenceRanges, walkMarkdown, type MarkdownNode } from "./markdown-structure.js";
 
 export interface Chunk {
   chunk_id: string; // 唯一ID，格式: {docId}_{index}_{sha256前10位}
@@ -16,6 +10,7 @@ export interface Chunk {
   title: string; // 文档标题
   heading_path: string[]; // 标题层级路径，如 ["# 概述", "## 安装"]
   content: string; // chunk 的 Markdown 原文
+  retrieval_content?: string; // 补充表头、代码围栏等上下文后的文本，不能用于计算原文 offset
   token_count: number; // token 估算数
   start_offset: number; // 在原文中的起始字符偏移
   end_offset: number; // 在原文中的结束字符偏移
@@ -30,14 +25,16 @@ const MAX_PASSAGE_METADATA_TOKENS = 96; // title + heading_path 前缀的 token 
 export interface ChunkingOptions {
   maxTokens?: number;
   overlapTokens?: number;
+  countTokens?: (text: string) => number;
 }
 
 type ResolvedChunkingOptions = {
   maxTokens: number;
   overlapTokens: number;
+  countTokens: (text: string) => number;
 };
 
-type BlockType = "heading" | "paragraph" | "list" | "code" | "table" | "other";
+type BlockType = "heading" | "paragraph" | "list" | "code" | "table" | "math" | "blockquote" | "other";
 
 type Block = {
   type: BlockType;
@@ -45,9 +42,43 @@ type Block = {
   headingPath: string[];
   startOffset: number;
   endOffset: number;
+  node: MarkdownNode;
+  source: string;
+  context: string[];
+  intro?: string;
+  retrievalText?: string;
+  definitions: Map<string, string>;
+  countTokens: (text: string) => number;
 };
 
-type PassageInput = Pick<Chunk, "title" | "heading_path" | "content">;
+type PassageInput = Pick<Chunk, "title" | "heading_path" | "content" | "retrieval_content">;
+
+export class UnsplittableMarkdownError extends Error {}
+
+/** Reuse structure rules with the generation tokenizer; skip only indivisible oversized units. */
+export function markdownCompressionUnits(
+  content: string,
+  budget: number,
+  countTokens: (text: string) => number,
+): Array<{ text: string; atomic: boolean }> {
+  return parseMarkdownBlocks(content, countTokens).flatMap((block) => {
+    try {
+      if (block.intro && block.type !== "paragraph" && block.type !== "heading" &&
+          countTokens(block.intro) <= budget / 4 && !block.context.includes(block.intro)) {
+        block = { ...block, context: [...block.context, block.intro] };
+      }
+      const parts = block.type === "paragraph"
+        ? packRanges(block, sentenceRanges(block.text, protectedRanges(block.node, block.startOffset)), budget)
+        : splitOversizedBlock(block, budget);
+      return parts.map((part) => ({ text: renderBlock(part).trim(), atomic:
+        part.type !== "paragraph" || part.context.length > 0 || protectedRanges(part.node, part.startOffset)
+          .some(([start, end]) => start < part.text.length && end > 0) }));
+    } catch (error) {
+      if (error instanceof UnsplittableMarkdownError) return [];
+      throw error;
+    }
+  });
+}
 
 /**
  * 将 Markdown 文档解析为多个 chunk。
@@ -65,27 +96,27 @@ export function chunkMarkdown(
 ): Chunk[] {
   const chunking = resolveChunkingOptions(options);
   //将 Markdown 解析为 AST，再提取为 Block 数组。这就是 GFM 解析发生的地方。
-  const blocks = parseMarkdownBlocks(markdown);
+  const blocks = parseMarkdownBlocks(markdown, chunking.countTokens);
   const chunks: Chunk[] = [];
   let buffer: Block[] = []; //当前正在累积的 Block 文本
 
   /**
-   * flush 把 buffer 打包成一个 Chunk,buffer 是当前正在累积的块集合
+   * 把当前累积在 buffer 里的多个 Block，打包成一个 Chunk。buffer 是当前正在累积的块集合
    */
   const flush = () => {
     if (!buffer.length) return;
-    chunks.push(buildChunk(docId, title, buffer, chunks.length));
+    chunks.push(buildChunk(docId, title, buffer, chunks.length, markdown));
     buffer = [];
   };
-
   for (const block of blocks) {
     //如果遇到标题且 buffer 里已有内容，说明开始新章节，先 flush。
     if (block.type === "heading" && startsNewSection(buffer, block)) flush();
-
+    //计算当前 part 能用的内容预算
     const budget = contentTokenBudget(
       title,
       block.headingPath,
       chunking.maxTokens,
+      chunking.countTokens,
     );
     for (const part of splitOversizedBlock(block, budget)) {
       //如果加入新块后超过总预算 → 先 flush 当前 buffer
@@ -103,7 +134,7 @@ export function chunkMarkdown(
         //如果重叠内容太多导致新 chunk 超限，从头部逐步丢弃
         buffer = trimOverlapToFit(title, buffer, part, chunking.maxTokens);
       }
-      //最后把 part 加入 buffe
+      //最后把 part 加入 buffer
       buffer.push(part);
     }
   }
@@ -114,6 +145,8 @@ export function chunkMarkdown(
 
 /**
  * 解析并校验参数（maxTokens 至少 64，overlapTokens 在合理范围内）
+ * @param options chunk参数
+ * @return {maxTokens, overlapTokens}
  */
 function resolveChunkingOptions(
   options: ChunkingOptions,
@@ -126,29 +159,34 @@ function resolveChunkingOptions(
       "Chunk overlapTokens must be non-negative and smaller than maxTokens",
     );
   }
-  return { maxTokens, overlapTokens };
+  return { maxTokens, overlapTokens, countTokens: options.countTokens ?? estimateTokens };
 }
 
 export function buildChunkPassage(chunk: PassageInput): string {
-  return `${buildPassagePrefix(chunk.title, chunk.heading_path)}\n${chunk.content}`;
+  return `${buildPassagePrefix(chunk.title, chunk.heading_path)}\n${chunk.retrieval_content ?? chunk.content}`;
 }
 
 /**
- * 将 Markdown 解析为 AST，再提取为 Block 数组。这就是 GFM 解析发生的地方。
+ * 将 Markdown 解析为 AST, 再提取为 Block 数组。这就是 GFM 解析发生的地方。
  */
-function parseMarkdownBlocks(markdown: string): Block[] {
+function parseMarkdownBlocks(markdown: string, countTokens = estimateTokens): Block[] {
   //fromMarkdown:将 Markdown 文本解析为 mdast 语法树（一个 Root 节点）
-  const root = fromMarkdown(markdown, {
-    // 告诉 micromark 解析器启用 GFM 扩展，能识别表格、删除线、任务列表、自动链接、脚注等。
-    extensions: [gfm()],
-    // 将 micromark 层产出的 GFM token 转为 mdast AST 节点（如 table、tableRow、tableCell、delete 等）
-    mdastExtensions: [gfmFromMarkdown()],
+  const root = parseMarkdown(markdown);
+  const definitions = new Map<string, string>();
+  walkMarkdown(root, (node) => {
+    if (node.type !== "definition" && node.type !== "footnoteDefinition") return;
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    if (node.identifier && start !== undefined && end !== undefined) {
+      definitions.set(`${node.type}:${node.identifier}`, markdown.slice(start, end));
+    }
   });
   const blocks: Block[] = [];
   //栈式结构，记录当前所在的标题层级
   let headingPath: string[] = [];
   //遍历 AST 根节点的每个直接子节点（每个都是一个顶层块元素）
-  for (const node of root.children) {
+  for (const node of root.children ?? []) {
+    if (node.type === "definition" || node.type === "footnoteDefinition") continue;
     // position 是 mdast 提供的源码位置信息。
     const startOffset = node.position?.start.offset;
     const endOffset = node.position?.end.offset;
@@ -162,31 +200,57 @@ function parseMarkdownBlocks(markdown: string): Block[] {
       //更新 headingPath：比如遇到 ## 安装（depth=2），就把 path 截断到 level 1，再追加当前标题文本
       headingPath = updateHeadingPath(
         headingPath,
-        node.depth,
+        node.depth!,
         //递归提取节点中的所有文本。优先取 value（文本节点、代码节点），其次取 alt（图片），否则递归处理 children。用于提取标题文本。
         extractNodeText(node).trim(),
       );
     }
     //每个节点包装为 Block 对象，headingPath 做浅拷贝
+    // {
+    //   type: "paragraph",
+    //   text: "一个热点 key 过期时，大量请求可能同时访问数据库。",
+    //   headingPath: ["Redis 缓存实践", "缓存击穿"],
+    //   startOffset: 120,
+    //   endOffset: 160
+    // }
     blocks.push({
       type,
       text,
       headingPath: [...headingPath],
       startOffset,
       endOffset,
+      node,
+      source: markdown,
+      context: [],
+      definitions,
+      countTokens,
     });
+  }
+  for (let index = 0; index < blocks.length; index++) {
+    const block = blocks[index]!;
+    const previous = blocks[index - 1];
+    const next = blocks[index + 1];
+    if (previous?.type === "paragraph" && samePath(previous.headingPath, block.headingPath) &&
+        countTokens(previous.text) <= 64) block.intro = previous.text;
+    if (block.type === "math" || isImageBlock(block)) {
+      if (block.intro) block.context.push(block.intro);
+      if (next?.type === "paragraph" && samePath(next.headingPath, block.headingPath) &&
+          countTokens(next.text) <= 64) block.context.push(next.text);
+    }
   }
   return blocks;
 }
 /**
  * 将 mdast 节点类型映射为 BlockType
  */
-function blockType(node: RootContent): BlockType {
+function blockType(node: MarkdownNode): BlockType {
   if (node.type === "heading") return "heading";
   if (node.type === "paragraph") return "paragraph";
   if (node.type === "list") return "list";
   if (node.type === "code") return "code";
   if ((node as { type: string }).type === "table") return "table";
+  if (node.type === "math") return "math";
+  if (node.type === "blockquote") return "blockquote";
   return "other";
 }
 /**
@@ -257,15 +321,15 @@ function compactHeadingPath(path: string[], budget: number): string {
   return selected.join(" > ");
 }
 
-function truncateToTokenBudget(text: string, budget: number): string {
+function truncateToTokenBudget(text: string, budget: number, countTokens = estimateTokens): string {
   if (budget <= 0) return "";
-  if (estimateTokens(text) <= budget) return text;
+  if (countTokens(text) <= budget) return text;
   let low = 1;
   let high = text.length;
   let best = 1;
   while (low <= high) {
     const middle = Math.floor((low + high) / 2);
-    if (estimateTokens(text.slice(0, middle)) <= budget) {
+    if (countTokens(text.slice(0, middle)) <= budget) {
       best = middle;
       low = middle + 1;
     } else {
@@ -316,19 +380,23 @@ function buildChunk(
   title: string,
   blocks: Block[],
   index: number,
+  markdown: string,
 ): Chunk {
   const contentBlocks = blocks.filter((block) => block.text.trim());
   //把多个 block 的 text 拼接成一个完整的 Markdown 字符串
-  const rawContent = joinBlocksRaw(contentBlocks);
+  const start = Math.min(...contentBlocks.map((block) => block.startOffset));
+  const end = Math.max(...contentBlocks.map((block) => block.endOffset));
+  const rawContent = markdown.slice(start, end);
   //原始拼接结果开头有多少空白字符
   const leadingWhitespace = rawContent.length - rawContent.trimStart().length;
   //结尾有多少空白字符
   const trailingWhitespace = rawContent.length - rawContent.trimEnd().length;
   //trim 后的干净内容
   const content = rawContent.trim();
+  const retrievalContent = joinBlocks(blocks);
   const headingPath = chunkHeadingPath(blocks);
   const digest = createHash("sha256")
-    .update(content)
+    .update(retrievalContent)
     .digest("hex")
     .slice(0, 10);
   const chunkId = `${docId}_${index}_${digest}`;
@@ -341,7 +409,8 @@ function buildChunk(
     title,
     heading_path: [...headingPath],
     content,
-    token_count: estimateTokens(content),
+    ...(retrievalContent !== content ? { retrieval_content: retrievalContent } : {}),
+    token_count: blocks[0]!.countTokens(retrievalContent),
     start_offset:
       Math.min(...contentBlocks.map((block) => block.startOffset)) +
       leadingWhitespace,
@@ -360,7 +429,7 @@ function exceedsPassageBudget(
 ): boolean {
   const allBlocks = [...blocks, next];
   return (
-    estimateTokens(
+    next.countTokens(
       buildChunkPassage({
         title,
         heading_path: chunkHeadingPath(allBlocks),
@@ -377,9 +446,10 @@ function contentTokenBudget(
   title: string,
   headingPath: string[],
   maxTokens: number,
+  countTokens: (text: string) => number,
 ): number {
   //调用 estimateTokens 估算title 和 heading_path 前缀占多少 token
-  const prefixTokens = estimateTokens(
+  const prefixTokens = countTokens(
     buildChunkPassage({ title, heading_path: headingPath, content: "" }),
   );
   return Math.max(1, maxTokens - prefixTokens);
@@ -391,13 +461,44 @@ function contentTokenBudget(
  */
 function splitOversizedBlock(block: Block, budget: number): Block[] {
   //如果块本身不超限，直接返回。
-  if (estimateTokens(block.text) <= budget) return [block];
+  if (block.countTokens(renderBlock(block)) <= budget) return [block];
+  if ((block.type === "math" || isImageBlock(block)) && block.context.length) {
+    // Nearby prose is optional; never reject a fitting formula because of copied context.
+    const context = [...block.context];
+    while (context.length && block.countTokens(renderBlock({ ...block, context })) > budget) context.pop();
+    block = { ...block, context };
+    if (block.countTokens(renderBlock(block)) <= budget) return [block];
+  }
+  if (block.type === "math" || block.node.type === "html") {
+    throw new UnsplittableMarkdownError(`Atomic ${block.node.type} at offset ${block.startOffset} exceeds the chunk budget; shorten it or increase CHUNK_MAX_TOKENS`);
+  }
+  if (block.intro && block.countTokens(block.intro) <= budget / 4 && !block.context.includes(block.intro)) {
+    block = { ...block, context: [...block.context, block.intro] };
+  }
+  if (block.type === "code") return splitCode(block, budget);
+  if (block.type === "table") return splitTable(block, budget);
+  if (block.type === "list") return splitList(block, budget);
+  if (block.type === "blockquote") {
+    const last = block.node.children?.at(-1);
+    const attribution = last?.type === "paragraph" ? extractNodeText(last).trim() : "";
+    const context = [...block.context, "引用片段："];
+    if (/^(?:来源|出处|作者|source)\s*[:：]/iu.test(attribution) && block.countTokens(attribution) <= budget / 4) {
+      context.push(attribution);
+    }
+    return (block.node.children ?? []).flatMap((child) =>
+      splitOversizedBlock(childBlock(block, child, context), budget));
+  }
+  const units = sentenceRanges(block.text, protectedRanges(block.node, block.startOffset));
+  return packRanges(block, units, budget);
+}
 
-  //代码块 / 列表 / 表格 → 按行拆分 |   段落块 → 按句子拆分
-  const units =
-    block.type === "code" || block.type === "list" || block.type === "table"
-      ? lineRanges(block.text)
-      : sentenceRanges(block.text);
+function packRanges(
+  block: Block,
+  units: Array<[number, number]>,
+  budget: number,
+  decorate: (part: Block) => Block = (part) => part,
+  oversized: (start: number, end: number) => Block[] = (start, end) => hardSplitBlock(block, start, end, budget),
+): Block[] {
   const parts: Block[] = [];
   //当前正在累积的连续 unit 区间的起止位置
   let pendingStart: number | null = null;
@@ -406,23 +507,23 @@ function splitOversizedBlock(block: Block, budget: number): Block[] {
   //把当前 pending 区间从原 block 中切出来，生成一个新 Block 加入 parts，然后重置 pending
   const flushPending = () => {
     if (pendingStart === null) return;
-    parts.push(sliceBlock(block, pendingStart, pendingEnd));
+    parts.push(decorate(sliceBlock(block, pendingStart, pendingEnd)));
     pendingStart = null;
   };
 
   for (const [start, end] of units) {
-    const unit = block.text.slice(start, end);
-    //如果当前 unit 本身就比 budget 还大（比如一行非常长的代码、一个超长的句子），先 flush 掉之前 pending 的内容，然后对当前 unit 做强制二分截断。
-    if (estimateTokens(unit) > budget) {
+    const unit = decorate(sliceBlock(block, start, end));
+    //超长单元交给对应的结构拆分规则；普通文本才会进入字符回退。
+    if (block.countTokens(renderBlock(unit)) > budget) {
       flushPending();
-      parts.push(...hardSplitBlock(block, start, end, budget));
+      parts.push(...oversized(start, end));
       continue;
     }
 
     const candidateStart = pendingStart ?? start;
-    const candidate = block.text.slice(candidateStart, end);
+    const candidate = decorate(sliceBlock(block, candidateStart, end));
     //判断合并后是否超预算
-    if (pendingStart !== null && estimateTokens(candidate) > budget) {
+    if (pendingStart !== null && block.countTokens(renderBlock(candidate)) > budget) {
       flushPending();
       pendingStart = start;
     } else if (pendingStart === null) {
@@ -431,35 +532,108 @@ function splitOversizedBlock(block: Block, budget: number): Block[] {
     pendingEnd = end;
   }
   flushPending();
+  //parts = [小 Block 1, 小 Block 2, 小 Block 3]
   return parts;
 }
 
-function sentenceRanges(text: string): Array<[number, number]> {
-  const ranges: Array<[number, number]> = [];
-  let start = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index]!;
-    if (!"。！？；.!?;\n".includes(char)) continue;
-    let end = index + 1;
-    while (end < text.length && /\s/u.test(text[end]!)) end += 1;
-    ranges.push([start, end]);
-    start = end;
-    index = end - 1;
-  }
-  if (start < text.length) ranges.push([start, text.length]);
-  return ranges.length ? ranges : [[0, text.length]];
+function childBlock(block: Block, node: MarkdownNode, context = block.context): Block {
+  const start = node.position?.start.offset;
+  const end = node.position?.end.offset;
+  if (start === undefined || end === undefined) throw new Error("Markdown node has no source position");
+  return { ...block, node, type: blockType(node), text: block.source.slice(start, end),
+    startOffset: start, endOffset: end, context, intro: undefined, retrievalText: undefined };
 }
 
-function lineRanges(text: string): Array<[number, number]> {
-  const ranges: Array<[number, number]> = [];
-  let start = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    if (text[index] !== "\n") continue;
-    ranges.push([start, index + 1]);
-    start = index + 1;
+function nodeRanges(block: Block, nodes: MarkdownNode[]): Array<[number, number]> {
+  return nodes.map((node) => [node.position!.start.offset! - block.startOffset,
+    node.position!.end.offset! - block.startOffset]);
+}
+
+function splitTable(block: Block, budget: number): Block[] {
+  const rows = block.node.children ?? [];
+  const data = rows.slice(1);
+  if (!data.length) throw new UnsplittableMarkdownError("Table header exceeds the chunk budget");
+  const header = block.text.slice(0, data[0]!.position!.start.offset! - block.startOffset).trimEnd();
+  const decorate = (part: Block): Block => ({ ...part, retrievalText:
+    part.startOffset === block.startOffset ? part.text : `${header}\n${part.text}` });
+  const ranges = nodeRanges(block, data);
+  ranges[0]![0] = 0; // The first source fragment retains the original header.
+  return packRanges(block, ranges, budget, decorate, (start, end) => {
+    const row = data.find((node) => node.position!.end.offset! === block.startOffset + end)!;
+    const rowNumber = data.indexOf(row) + 1;
+    const keyColumn = extractNodeText(rows[0]!.children?.[0]);
+    const keyValue = extractNodeText(row.children?.[0]);
+    const rowKey = block.countTokens(keyValue) <= budget / 4 ? `；${keyColumn}：${keyValue}` : "";
+    return (row.children ?? []).flatMap((cell, index) => {
+      const column = extractNodeText(rows[0]!.children?.[index]) || `列 ${index + 1}`;
+      const field = childBlock(block, cell, [...block.context, `表格第 ${rowNumber} 行${rowKey}；字段：${column}`]);
+      // A very wide/long row becomes labelled fields; preserve inline atoms in each field.
+      return splitOversizedBlock({ ...field, type: "paragraph" }, budget);
+    });
+  });
+}
+
+function splitList(block: Block, budget: number): Block[] {
+  const items = block.node.children ?? [];
+  return packRanges(block, nodeRanges(block, items), budget, (part) => part, (start, end) => {
+    const item = items.find((node) => node.position!.end.offset! === block.startOffset + end)!;
+    const lead = item.children?.[0];
+    const leadEnd = lead?.position?.end.offset ?? item.position!.end.offset!;
+    const label = truncateToTokenBudget(block.source.slice(item.position!.start.offset!, leadEnd)
+      .replace(/\s+/gu, " "), Math.min(32, Math.floor(budget / 4)), block.countTokens);
+    const context = [...block.context, `上级列表项：${label}`];
+    return (item.children ?? []).flatMap((child) => splitOversizedBlock(childBlock(block, child, context), budget));
+  });
+}
+
+function splitCode(block: Block, budget: number): Block[] {
+  const language = block.node.lang ?? "";
+  if (["mermaid", "plantuml", "dot", "graphviz"].includes(language.toLowerCase())) {
+    throw new UnsplittableMarkdownError(`Diagram at offset ${block.startOffset} exceeds the chunk budget; split it into complete diagrams`);
   }
-  if (start < text.length) ranges.push([start, text.length]);
-  return ranges.length ? ranges : [[0, text.length]];
+  const opening = block.text.match(/^[ \t]{0,3}(`{3,}|~{3,})[^\r\n]*(?:\r?\n|$)/u);
+  const bodyStart = opening?.[0].length ?? 0;
+  const closing = opening ? block.text.match(/(?:^|\n)[ \t]*([`~]{3,})[ \t]*$/u) : null;
+  const bodyEnd = closing && closing.index! >= bodyStart ? closing.index! : block.text.length;
+  const body = block.text.slice(bodyStart, bodyEnd);
+  const runs = [...body.matchAll(/`+/gu)].map((match) => match[0].length);
+  const fence = "`".repeat(Math.max(3, ...runs.map((length) => length + 1)));
+  const info = [language, block.node.meta ?? ""].filter(Boolean).join(" ");
+  const decorate = (start: number, end: number, owner?: string): Block => {
+    const part = sliceBlock(block, bodyStart + start, bodyStart + end);
+    const label = owner ? `；所属函数：${truncateToTokenBudget(owner, 24)}` : "";
+    return { ...part, retrievalText: `代码片段（原代码块的一部分）${label}\n${fence}${info}\n${part.text.trimEnd()}\n${fence}` };
+  };
+  let ranges;
+  try {
+    ranges = codeRanges(body, language,
+      (start, end, owner) => block.countTokens(renderBlock(decorate(start, end, owner))) <= budget);
+  } catch (error) {
+    if (error instanceof OversizedCodeError) throw new UnsplittableMarkdownError(error.message);
+    throw error;
+  }
+  return ranges.map(({ start, end, owner }) => decorate(start, end, owner));
+}
+
+function renderBlock(block: Block): string {
+  const references = new Set<string>();
+  walkMarkdown(block.node, (node) => {
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    if (start === undefined || end === undefined || start < block.startOffset || end > block.endOffset) return;
+    const type = node.type === "footnoteReference" ? "footnoteDefinition"
+      : node.type === "linkReference" || node.type === "imageReference" ? "definition" : undefined;
+    const definition = type && block.definitions.get(`${type}:${node.identifier}`);
+    if (definition) references.add(definition);
+  });
+  return [...block.context, block.retrievalText ?? block.text, ...references].filter(Boolean).join("\n\n");
+}
+
+function isImageBlock(block: Block): boolean {
+  return block.node.type === "paragraph" && Boolean(block.node.children?.some((node) =>
+    node.type === "image" || node.type === "imageReference")) &&
+    block.node.children!.every((node) => ["image", "imageReference"].includes(node.type) ||
+      (node.type === "text" && !node.value?.trim()));
 }
 
 function hardSplitBlock(
@@ -476,14 +650,22 @@ function hardSplitBlock(
     let best = low;
     while (low <= high) {
       const middle = Math.floor((low + high) / 2);
-      if (estimateTokens(block.text.slice(cursor, middle)) <= budget) {
+      if (block.countTokens(renderBlock(sliceBlock(block, cursor, middle))) <= budget) {
         best = middle;
         low = middle + 1;
       } else {
         high = middle - 1;
       }
     }
-    parts.push(sliceBlock(block, cursor, best));
+    const spans = protectedRanges(block.node, block.startOffset);
+    const atom = spans.find(([left, right]) => left < best && right > best);
+    if (atom) best = atom[0] > cursor ? atom[0] : atom[1];
+    if (best < end && /[\uDC00-\uDFFF]/u.test(block.text[best]!)) best--;
+    const part = sliceBlock(block, cursor, best);
+    if (best <= cursor || block.countTokens(renderBlock(part)) > budget) {
+      throw new UnsplittableMarkdownError(`Protected Markdown content at offset ${block.startOffset + cursor} exceeds the chunk budget`);
+    }
+    parts.push(part);
     cursor = best;
   }
   return parts;
@@ -498,6 +680,12 @@ function sliceBlock(block: Block, start: number, end: number): Block {
   };
 }
 
+/**
+ * 从上一个 chunk 的末尾开始，取最多 overlapTokens 个 token 的 block
+ *  @params blocks 上一个 chunk 的所有 block
+ *  @params nextHeadingPath 下一个 chunk 所在章节的 headingPath
+ *  @params overlapTokens 最多允许重叠多少 token
+ */
 function takeOverlap(
   blocks: Block[],
   nextHeadingPath: string[],
@@ -514,12 +702,15 @@ function takeOverlap(
     ) {
       continue;
     }
-    const tokens = estimateTokens(block.text);
+    // Structured content carries its own context; never copy a partial code/table/formula.
+    if (block.type !== "paragraph" || block.context.length || block.retrievalText) break;
+    const tokens = block.countTokens(renderBlock(block));
     if (tokens <= remaining) {
       result.push(block);
       remaining -= tokens;
     } else {
-      result.push(tailBlock(block, remaining));
+      const tail = tailBlock(block, remaining);
+      if (tail) result.push(tail);
       remaining = 0;
     }
     if (remaining <= 0) break;
@@ -528,20 +719,14 @@ function takeOverlap(
   return result.reverse();
 }
 
-function tailBlock(block: Block, budget: number): Block {
-  let low = 0;
-  let high = block.text.length - 1;
-  let best = high;
-  while (low <= high) {
-    const middle = Math.floor((low + high) / 2);
-    if (estimateTokens(block.text.slice(middle)) <= budget) {
-      best = middle;
-      high = middle - 1;
-    } else {
-      low = middle + 1;
-    }
+function tailBlock(block: Block, budget: number): Block | undefined {
+  let tail: Block | undefined;
+  for (const [start] of sentenceRanges(block.text, protectedRanges(block.node, block.startOffset)).reverse()) {
+    const candidate = sliceBlock(block, start, block.text.length);
+    if (block.countTokens(renderBlock(candidate)) > budget) break;
+    tail = candidate;
   }
-  return sliceBlock(block, best, block.text.length);
+  return tail;
 }
 
 function trimOverlapToFit(
@@ -574,10 +759,11 @@ function joinBlocks(blocks: Block[]): string {
 function joinBlocksRaw(blocks: Block[]): string {
   const nonEmpty = blocks.filter((block) => block.text.trim());
   return nonEmpty.reduce((result, block, index) => {
-    if (index === 0) return block.text;
+    const text = renderBlock(block);
+    if (index === 0) return text;
     const previous = nonEmpty[index - 1]!;
-    const separator = previous.endOffset === block.startOffset ? "" : "\n\n";
-    return `${result}${separator}${block.text}`;
+    const separator = previous.endOffset === block.startOffset && renderBlock(previous) === previous.text && text === block.text ? "" : "\n\n";
+    return `${result}${separator}${text}`;
   }, "");
 }
 

@@ -3,24 +3,35 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { DocumentCreateDto, DocumentUpdateDto } from '../common/dto.js';
 import type { AccessContext, IndexStatus, Visibility } from '../common/types.js';
 import { DatabaseService } from '../database/database.service.js';
 import type { DocumentRecord } from './document.types.js';
-import { DocumentsRepository } from './documents.repository.js';
+import { DocumentsRepository, mapDocumentRow } from './documents.repository.js';
+import { ArticleRepository } from '../articles/article.repository.js';
+import { ArticleInteractionsRepository } from '../articles/article-interactions.repository.js';
+import { DocumentCatalog } from '../database/document-catalog.js';
+import { canAccessDocument } from './document-access.js';
+export { canAccessDocument } from './document-access.js';
 
 @Injectable()
 export class DocumentsService {
   private readonly records = new Map<string, DocumentRecord>();
+  private readonly lifecycleWrites = new Map<string, Promise<unknown>>();
   private readonly repository: DocumentsRepository;
 
-  constructor(private readonly database: DatabaseService) {
+  constructor(private readonly database: DatabaseService, @Optional() private readonly articles?: ArticleRepository,
+    @Optional() private readonly interactions?: ArticleInteractionsRepository,
+    @Optional() private readonly catalog?:DocumentCatalog) {
     this.repository = new DocumentsRepository(database);
+    if(catalog) this.records=catalog.records;
   }
 
   async create(request: DocumentCreateDto, context: AccessContext): Promise<DocumentRecord> {
+    if (request.doc_id) await this.assertUnmanaged(request.doc_id);
     this.assertTeamTarget(request.visibility, request.team_id, context);
     const now = new Date();
     const record: DocumentRecord = {
@@ -59,13 +70,13 @@ export class DocumentsService {
     context: AccessContext,
     page: number,
     pageSize: number,
-    filters: { q?: string; visibility?: Visibility; source_type?: string; tag?: string; team_id?: string; index_status?: IndexStatus } = {},
+    filters: { q?: string; visibility?: Visibility; source_type?: string; tag?: string; team_id?: string; index_status?: IndexStatus; category_id?:string } = {},
   ): Promise<{ items: DocumentRecord[]; total: number }> {
     let visible: DocumentRecord[];
     if (this.database.metadataEnabled) {
       return this.repository.list(context, page, pageSize, filters);
     } else {
-      visible = [...this.records.values()].filter((record) => canAccessDocument(record, context));
+      visible = [...this.records.values()].filter((record) => canAccessDocument(record, context) && !this.articles?.records.has(record.doc_id));
       const query = filters.q?.trim().toLocaleLowerCase();
       if (query) visible = visible.filter((record) => `${record.title}\n${record.content}`.toLocaleLowerCase().includes(query));
       if (filters.visibility) visible = visible.filter((record) => record.visibility === filters.visibility);
@@ -73,6 +84,7 @@ export class DocumentsService {
       if (filters.tag?.trim()) visible = visible.filter((record) => record.tags.includes(filters.tag!.trim()));
       if (filters.team_id?.trim()) visible = visible.filter((record) => record.team_id === filters.team_id!.trim());
       if (filters.index_status) visible = visible.filter((record) => record.index_status === filters.index_status);
+      if (filters.category_id) visible = visible.filter(record => filters.category_id==='__uncategorized__'?!record.category_id:record.category_id===filters.category_id);
       visible.sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime());
     }
     const total = visible.length;
@@ -100,13 +112,16 @@ export class DocumentsService {
         `${record.title}\n${record.content}`.toLocaleLowerCase().includes(query),
       );
     }
-    visible.sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime());
+    visible = visible.filter(r => !this.articles?.records.has(r.doc_id) || this.articles.records.get(r.doc_id)?.state === 'published');
+    visible.sort((a, b) => (this.articles?.records.get(b.doc_id)?.published_at ?? b.created_at).getTime() - (this.articles?.records.get(a.doc_id)?.published_at ?? a.created_at).getTime());
     const total = visible.length;
     const offset = (page - 1) * pageSize;
     return { items: visible.slice(offset, offset + pageSize), total };
   }
 
   async getPublicArticle(docId: string): Promise<DocumentRecord> {
+    const article = await this.articles?.get(docId);
+    if (article && article.state !== 'published') throw new NotFoundException('Public article not found.');
     const record = await this.require(docId);
     if (
       record.visibility !== 'public' ||
@@ -124,17 +139,20 @@ export class DocumentsService {
 
   async require(docId: string): Promise<DocumentRecord> {
     const record = await this.get(docId);
-    if (!record) throw new NotFoundException('Document not found.');
+    if (!record || record.deleted_at) throw new NotFoundException('Document not found.');
     return record;
   }
 
   async getAccessible(docId: string, context: AccessContext): Promise<DocumentRecord> {
     const record = await this.require(docId);
+    const article=await this.articles?.get(docId);
+    if(article&&article.state!=='published'&&article.owner_id!==context.user_id) throw new ForbiddenException('Document access denied.');
     this.assertAccess(record, context);
     return record;
   }
 
   async getWritable(docId: string, context: AccessContext): Promise<DocumentRecord> {
+    await this.assertUnmanaged(docId);
     const record = await this.require(docId);
     const allowed = record.space_id === context.space_id && (
       record.owner_id === context.user_id ||
@@ -172,6 +190,7 @@ export class DocumentsService {
       ...current,
       ...defined(documentPatch),
       team_id: nextTeamId ?? null,
+      category_id: nextVisibility==='private' && current.visibility==='private'?current.category_id ?? null:null,
       owner_id: current.owner_id ?? context.user_id,
       document_version: indexedChanged ? current.document_version + 1 : current.document_version,
       index_status: indexedChanged ? 'pending' : current.index_status,
@@ -188,15 +207,76 @@ export class DocumentsService {
           message: 'Document changed while saving. Reload and retry.',
         });
       }
-    } else this.records.set(docId, next);
+    } else {
+      const latest=this.records.get(docId);
+      if(!latest || latest.deleted_at) throw new NotFoundException('Document not found.');
+      if(latest.document_version!==current.document_version) throw new ConflictException('Document changed while saving.');
+      next.category_id=next.visibility==='private'?latest.category_id ?? null:null;
+      this.records.set(docId,next);
+    }
     return next;
   }
 
   async delete(docId: string, context: AccessContext): Promise<void> {
     await this.getWritable(docId, context);
-    if (this.database.metadataEnabled) await this.repository.delete(docId);
-    else this.records.delete(docId);
+    if (this.database.metadataEnabled) await this.database.transaction(async manager => {
+      await manager.query('DELETE FROM knowledge_documents WHERE doc_id=?', [docId]);
+      await this.interactions?.deleteForArticle(docId, manager);
+    });
+    else { this.records.delete(docId); await this.interactions?.deleteForArticle(docId); }
   }
+
+  async ownedPrivate(context: AccessContext, manager?: import('typeorm').EntityManager): Promise<DocumentRecord[]> {
+    if (this.database.metadataEnabled) {
+      const sql = `SELECT * FROM knowledge_documents d WHERE d.visibility='private' AND d.space_id=? AND d.owner_id=?
+        AND NOT EXISTS (SELECT 1 FROM article_drafts a WHERE a.article_id=d.doc_id)${manager ? ' FOR UPDATE' : ''}`;
+      const rows = manager ? await manager.query(sql, [context.space_id, context.user_id])
+        : await this.database.query(sql, [context.space_id, context.user_id]);
+      return rows.map(mapDocumentRow);
+    }
+    return [...this.records.values()].filter(r => r.visibility === 'private' && r.owner_id === context.user_id &&
+      r.space_id === context.space_id && !this.articles?.records.has(r.doc_id));
+  }
+
+  applyWorkspaceRecords(records: DocumentRecord[],baseVersions:Map<string,number>): void {
+    for (const record of records) {
+      const current=this.records.get(record.doc_id);if(!current) continue;
+      const delta=record.document_version-(baseVersions.get(record.doc_id) ?? record.document_version);
+      this.records.set(record.doc_id,{...current,category_id:record.category_id,deleted_at:record.deleted_at,delete_batch_id:record.delete_batch_id,
+        document_version:current.document_version+delta,
+        ...(delta?{active_index_version:record.active_index_version,index_status:record.index_status}:{}),});
+    }
+  }
+  async purgeDeleted(id: string,context: AccessContext) {
+    const d=(await this.ownedPrivate(context)).find(d => d.doc_id===id && d.deleted_at);
+    if (!d) throw new NotFoundException('回收文档不存在');
+    if (this.database.metadataEnabled) await this.database.query('DELETE FROM knowledge_documents WHERE doc_id=? AND owner_id=? AND deleted_at IS NOT NULL',[id,context.user_id]);
+    else this.records.delete(id);
+  }
+
+  async activateCurrent(docId: string, version: number, activate: (manager?: import('typeorm').EntityManager) => Promise<void>): Promise<boolean> {
+    if (this.database.metadataEnabled) return this.database.transaction(async manager => {
+      const rows = await manager.query('SELECT document_version,deleted_at FROM knowledge_documents WHERE doc_id=? FOR UPDATE', [docId]);
+      if (!rows[0] || rows[0].deleted_at || Number(rows[0].document_version) !== version) return false;
+      await activate(manager);
+      return true;
+    });
+    const work = (this.lifecycleWrites.get(docId) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+      const row = this.records.get(docId);
+      if (!row || row.deleted_at || row.document_version !== version) return false;
+      await activate();
+      return true;
+    });
+    this.lifecycleWrites.set(docId, work);
+    try { return await work; } finally { if (this.lifecycleWrites.get(docId) === work) this.lifecycleWrites.delete(docId); }
+  }
+
+  async assertUnmanaged(docId: string): Promise<void> {
+    if (await this.articles?.get(docId)) throw new ForbiddenException('Use the article publishing API to change this document.');
+  }
+
+  // Article publication is the sole writer of its public projection.
+  setArticleSnapshot(record: DocumentRecord): void { this.records.set(record.doc_id, record); }
 /**
    * 把文档标记为“已进入索引队列”状态 ，让前端轮询时能看到文档正在排队索引
    * @param docId 文档 ID
@@ -211,11 +291,15 @@ export class DocumentsService {
     });
   }
 
-  async markIndexing(docId: string): Promise<void> {
-    await this.patchState(docId, { index_status: 'indexing', index_error: null, updated_at: new Date() });
+  async markIndexing(docId: string, version?: number): Promise<void> {
+    await this.patchState(docId, { index_status: 'indexing', index_error: null, updated_at: new Date() }, version);
   }
 
-  async markReady(docId: string, chunkCount: number, version: number): Promise<void> {
+  async markReady(docId: string, chunkCount: number, version: number, manager?: import('typeorm').EntityManager): Promise<void> {
+    if(manager) {
+      await manager.query("UPDATE knowledge_documents SET index_status='ready',active_index_version=?,chunk_count=?,indexed_at=NOW(6),index_error=NULL WHERE doc_id=? AND document_version=? AND deleted_at IS NULL",[version,chunkCount,docId,version]);
+      return;
+    }
     await this.patchState(docId, {
       index_status: 'ready',
       active_index_version: version,
@@ -223,7 +307,7 @@ export class DocumentsService {
       indexed_at: new Date(),
       index_error: null,
       updated_at: new Date(),
-    });
+    }, version);
   }
 
   async markFailed(docId: string, error: string): Promise<void> {
@@ -243,20 +327,14 @@ export class DocumentsService {
     }
   }
 
-  private async patchState(docId: string, patch: Partial<DocumentRecord>): Promise<void> {
+  private async patchState(docId: string, patch: Partial<DocumentRecord>, version?: number): Promise<void> {
     const current = await this.require(docId);
+    if (version !== undefined && current.document_version !== version) return;
     const next = { ...current, ...patch };
     if (this.database.metadataEnabled) {
-      await this.repository.updateIndexState(next);
+      await this.repository.updateIndexState(next, version);
     } else this.records.set(docId, next);
   }
-}
-
-export function canAccessDocument(record: DocumentRecord, context: AccessContext): boolean {
-  if (record.visibility === 'public') return true;
-  if (record.space_id !== context.space_id) return false;
-  if (record.visibility === 'private') return record.owner_id === context.user_id;
-  return Boolean(record.team_id && context.team_ids.includes(record.team_id));
 }
 
 function defined<T extends object>(value: T): Partial<T> {

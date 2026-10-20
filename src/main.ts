@@ -15,6 +15,9 @@ export async function bootstrap(): Promise<NestFastifyApplication> {
     new FastifyAdapter(),
   );
   const config = app.get(AppConfig);
+  app.getHttpAdapter().getInstance().addHook('onRoute',(options: any) => {
+    if(options.url==='/ai/agent' && options.method==='POST') options.bodyLimit=8*1024*1024;
+  });
   await app.register(multipart, {
     limits: { fileSize: config.importMaxUploadMb * 1024 * 1024, files: 1 },
   });

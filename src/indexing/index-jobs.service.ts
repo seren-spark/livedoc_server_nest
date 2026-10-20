@@ -7,6 +7,7 @@ import type { DocumentIndexRequest } from "../documents/document.types.js";
 import { PersistentJobStore } from "../jobs/persistent-job-store.js";
 import type { IndexJobRecord } from "./index-job.types.js";
 import { IndexJobsRepository, mapIndexJob } from "./index-jobs.repository.js";
+import type { EntityManager } from 'typeorm';
 
 const ACTIVE: IndexJobStatus[] = ["queued", "running", "retry_wait"];
 
@@ -36,15 +37,16 @@ export class IndexJobsService {
     request: DocumentIndexRequest, // 要索引的文档快照（doc_id + document_version + 正文等）
     context: AccessContext, // 当前用户上下文（user_id / space_id / team_ids）
     _force = false,
+    manager?: EntityManager,
   ): Promise<IndexJobRecord> {
     //1. 先去查"同一篇文档的同一个版本，当前是否已有活跃任务"。
-    const duplicate = await this.activeFor(
+    const duplicate = manager ? null : await this.activeFor(
       request.doc_id,
       request.document_version,
     );
     if (duplicate) return duplicate;
     //查该文档全部历史任务，再过滤出 同版本 的任务。目的是取 generation 的最大值。
-    const previous = (await this.forDocument(request.doc_id)).filter(
+    const previous = (manager ? [] : await this.forDocument(request.doc_id)).filter(
       (item) => item.document_version === request.document_version,
     );
     const now = new Date();
@@ -79,7 +81,7 @@ export class IndexJobsService {
     };
     //判断是否启用 MySQL 任务队列。 indexJobsEnabled 来自 DatabaseService ，如果数据库不可用就走后面的内存 Map 退路。
     if (this.database.indexJobsEnabled) {
-      return this.repository.enqueue(job);
+      return this.repository.enqueue(job, manager);
     } else this.jobs.set(job.job_id, job);
     return job;
   }
@@ -93,9 +95,9 @@ export class IndexJobsService {
    * @param workerId 工作线程 ID
    * @returns 被领取的任务记录，或 null 表示没有任务可领取
    */
-  async claimNext(workerId: string): Promise<IndexJobRecord | null> {
+  async claimNext(workerId: string, targetJobId?: string): Promise<IndexJobRecord | null> {
     // PersistentJobStore still claims MySQL jobs in a transaction with FOR UPDATE SKIP LOCKED.
-    return this.store.claimNext(workerId);
+    return this.store.claimNext(workerId, targetJobId);
   }
 
   async heartbeat(jobId: string, workerId: string, generation: number): Promise<boolean> {
@@ -137,6 +139,9 @@ export class IndexJobsService {
 
   async activeCount(spaceId: string): Promise<number> {
     return this.store.activeCountBySpace(spaceId);
+  }
+  async deleteDocument(docId:string):Promise<void> {
+    await this.store.deleteWhere({whereSql:'doc_id=?',params:[docId],predicate:job=>job.doc_id===docId});
   }
 
   // 检查文档是否有活跃索引任务（queued/running/retry_wait）

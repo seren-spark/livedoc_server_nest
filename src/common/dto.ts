@@ -261,6 +261,18 @@ export class DocumentImportDraftDto {
 }
 
 export class SearchDto {
+  @IsOptional()
+  @IsBoolean()
+  include_retrieval_debug?: boolean = false;
+
+  @IsOptional()
+  @IsBoolean()
+  expand_query?: boolean = true;
+
+  @IsOptional()
+  @IsBoolean()
+  rerank?: boolean = true;
+
   @IsString()
   query!: string;
 
@@ -326,6 +338,10 @@ export class CurrentDocumentDto {
 
 export class AiWriteDto {
   @IsOptional()
+  @IsBoolean()
+  include_evidence?: boolean = false;
+
+  @IsOptional()
   @IsIn(WRITE_INTENTS)
   intent?: WriteIntent;
 
@@ -382,6 +398,10 @@ export class FeedbackDto {
 }
 
 export class PaginationQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  category_id?: string;
   @IsOptional()
   @Type(() => Number)
   @IsInt()

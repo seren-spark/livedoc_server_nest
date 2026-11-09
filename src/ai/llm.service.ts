@@ -4,6 +4,7 @@ import { AppConfig } from "../config/app-config.js";
 import type { ExtractedDocumentMemory } from '../documents/document-memory/document-memory.types.js';
 import { createLlmTool, LlmToolName } from './llm-tools.js';
 import type { AgentMessage, FunctionTool } from './document-agent.types.js';
+import { AgentExecutionError } from './agent-execution.js';
 
 @Injectable()
 export class LlmService {
@@ -16,7 +17,7 @@ export class LlmService {
   }
 
   async agentTurn(messages: AgentMessage[], tools: FunctionTool[], signal?: AbortSignal,
-    options: { role?: 'main' | 'classifier' | 'plan' | 'critic'; thinking?: boolean; thinkingBody?: Record<string, unknown>; json?: boolean; maxTokens?: number } = {}): Promise<{ message: AgentMessage; usage: any; thinkingDetected?: boolean }> {
+    options: { role?: 'main' | 'classifier' | 'plan' | 'critic'; thinking?: boolean; thinkingBody?: Record<string, unknown>; json?: boolean; maxTokens?: number; toolChoice?: string } = {}): Promise<{ message: AgentMessage; usage: any; thinkingDetected?: boolean }> {
     const model = options.role === 'classifier' ? this.config.agentClassifierModel : options.role === 'plan'
       ? this.config.agentPlanModel : options.role === 'critic' ? this.config.agentCriticModel : this.config.llmModel;
     const main = !options.role || options.role === 'main';
@@ -27,7 +28,8 @@ export class LlmService {
     const history = messages.map(message => this.reasoning.has(message) && options.thinking && main
       ? { ...message, reasoning_content: this.reasoning.get(message) } : message);
     const data = await this.request({ ...extra, ...thinking, model, messages: history,
-      ...(tools.length ? { tools, tool_choice: main && options.thinking ? 'auto' : 'required', parallel_tool_calls: false } : {}),
+      ...(tools.length ? { tools, tool_choice: options.toolChoice ? { type: 'function', function: { name: options.toolChoice } }
+        : main && options.thinking ? 'auto' : 'required', parallel_tool_calls: false } : {}),
       ...(options.json ? { response_format: { type: 'json_object' } } : {}),
       temperature: 0.2, stream: false, max_tokens: options.maxTokens ?? this.config.agentMaxOutputTokens }, signal);
     const message = data.choices?.[0]?.message;
@@ -55,7 +57,8 @@ export class LlmService {
     });
     if (!response.ok) {
       await response.body?.cancel();
-      throw new Error(`联网搜索服务请求失败（${response.status}）`);
+      throw new AgentExecutionError(response.status === 429 ? "UPSTREAM_RATE_LIMIT" : "UPSTREAM_HTTP_ERROR",
+        `联网搜索服务请求失败（${response.status}）`, [429, 502, 503, 504].includes(response.status));
     }
     const data = await response.json() as any;
     const sources: Array<{ index: number; title: string; url: string; content?: string }> = [];
@@ -76,7 +79,10 @@ export class LlmService {
     const content = data.output?.choices?.[0]?.message?.content;
     const summary = (typeof content === 'string' ? content : Array.isArray(content)
       ? content.map((part: { text?: string }) => part.text ?? '').join('\n') : '').slice(0, 12000);
-    return { summary, sources };
+    return { summary, sources, ...(data.usage ? { usage: {
+      prompt_tokens: Number(data.usage.input_tokens ?? data.usage.prompt_tokens ?? 0),
+      completion_tokens: Number(data.usage.output_tokens ?? data.usage.completion_tokens ?? 0),
+    } } : {}) };
   }
 
   async verifyThinking(on: Record<string, unknown>, off: Record<string, unknown>, signal: AbortSignal) {
@@ -304,10 +310,10 @@ export class LlmService {
       signal: combined,
     });
     if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new Error(
-        `LLM request failed: ${response.status}${detail ? ` ${detail.slice(0, 300)}` : ""}`,
-      );
+      await response.body?.cancel();
+      const status = response.status;
+      throw new AgentExecutionError(status === 429 ? "UPSTREAM_RATE_LIMIT" : "UPSTREAM_HTTP_ERROR",
+        `模型服务请求失败（${status}）`, [429, 502, 503, 504].includes(status));
     }
     return response.json();
   }

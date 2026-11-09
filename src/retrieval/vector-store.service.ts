@@ -80,6 +80,7 @@ export class VectorStoreService implements OnModuleInit {
       ["owner_id", "keyword"],
       ["visibility", "keyword"],
       ["source_type", "keyword"],
+      ["knowledge_layer", "keyword"],
       ["doc_id", "keyword"],
       ["document_version", "integer"],
       ["is_active", "bool"],
@@ -159,12 +160,13 @@ export class VectorStoreService implements OnModuleInit {
     scope: KnowledgeScope,// 权限范围
     limit: number,// 返回数量限制
     scoreThreshold: number,// 相似度阈值
+    wikiOnly = false,
   ): Promise<SearchHit[]> {
     if (this.config.vectorStore === "qdrant") {
       const result = await this.qdrant.query(this.config.qdrantCollection, {
         query: queryVector,// 传入查询向量
         using: "dense", // 使用 dense 命名向量
-        filter: buildPermissionFilter(context, scope), // 应用权限过滤
+        filter: buildPermissionFilter(context, scope, wikiOnly), // 应用权限过滤
         limit,
         score_threshold: scoreThreshold,
         with_payload: true, // 返回完整 payload
@@ -177,7 +179,7 @@ export class VectorStoreService implements OnModuleInit {
     }
     // 内存模式的降级实现（用于测试）
     return [...this.points.entries()]
-      .filter(([, item]) => canAccess(item.payload, context, scope))
+      .filter(([, item]) => canAccess(item.payload, context, scope, wikiOnly))
       .map(([pointId, item]) => ({
         pointId,
         score: cosineSimilarity(queryVector, item.vector),
@@ -206,12 +208,13 @@ export class VectorStoreService implements OnModuleInit {
     context: AccessContext,
     scope: KnowledgeScope,
     limit: number,
+    wikiOnly = false,
   ): Promise<SearchHit[]> {
     if (this.config.vectorStore === "qdrant") {
       const result = await this.qdrant.query(this.config.qdrantCollection, {
         query: querySparse,
         using: "sparse",
-        filter: buildPermissionFilter(context, scope),
+        filter: buildPermissionFilter(context, scope, wikiOnly),
         limit,
         with_payload: true,
       } as any);
@@ -223,7 +226,7 @@ export class VectorStoreService implements OnModuleInit {
     }
     // 内存模式使用 BM25 算法
     const documents = [...this.points.entries()]
-      .filter(([, item]) => canAccess(item.payload, context, scope))
+      .filter(([, item]) => canAccess(item.payload, context, scope, wikiOnly))
       .map(([pointId, item]) => [pointId, item.payload] as const);
     return bm25Search(query, documents, limit, this.sparse);
   }
@@ -316,6 +319,7 @@ export function buildPayload(
     owner_id: document.owner_id,
     visibility: document.visibility,
     source_type: document.source_type,
+    knowledge_layer: document.knowledge_layer ?? "source",
     title: document.title,
     content: chunk.retrieval_content ?? chunk.content,
     source_content: chunk.content,
@@ -336,6 +340,7 @@ export function buildPayload(
 export function buildPermissionFilter(
   context: AccessContext, // 包含 user_id, space_id, team_ids 等用户上下文
   scope: KnowledgeScope,// 包含 private/team/public 开关和 document_ids 列表
+  wikiOnly = false,
 ): Record<string, any> {
   // 第1步：必须满足的基础条件 - 只检索激活的文档片段
   const must: any[] = [{ key: "is_active", match: { value: true } }];
@@ -369,14 +374,17 @@ export function buildPermissionFilter(
   // 第6步：如果没有任何权限分支，添加拒绝条件（防止全量返回）
   if (!should.length)
     must.push({ key: "__deny_all__", match: { value: true } });
-  return { must, should };
+  if (wikiOnly) must.push({ key: "knowledge_layer", match: { value: "wiki" } });
+  return { must, should, ...(!wikiOnly ? { must_not: [{ key: "knowledge_layer", match: { value: "wiki" } }] } : {}) };
 }
 
 export function canAccess(
   payload: Record<string, any>,
   context: AccessContext,
   scope: KnowledgeScope,
+  wikiOnly = false,
 ): boolean {
+  if (wikiOnly ? payload.knowledge_layer !== "wiki" : payload.knowledge_layer === "wiki") return false;
   if (payload.is_active !== true) return false;
   if (
     scope.document_ids.length &&

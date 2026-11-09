@@ -43,12 +43,12 @@ describe("article publication lifecycle", () => {
         .send({ ...draft, expected_version: version })
         .expect(200)
     ).body;
-  const publish = async (id: string, version: number) =>
+  const publish = async (id: string, version: number, included = true) =>
     (
       await api
         .post(`/articles/${id}/publish`)
         .set(headers())
-        .send({ expected_version: version })
+        .send({ expected_version: version, include_in_knowledge: included })
         .expect(201)
     ).body;
   beforeAll(async () => {
@@ -68,6 +68,75 @@ describe("article publication lifecycle", () => {
   }, 30000);
   afterAll(async () => {
     await app.close();
+  });
+
+  test("legacy publications without a knowledge flag retain their indexed behavior", async () => {
+    const { article_id: id } = await create();
+    const saved = await save(id, 1);
+    const published = await publish(id, saved.draft_version);
+    const repository = app.get(ArticleRepository);
+    const legacy = await repository.requireOwner(id, context);
+    delete legacy.published_metadata!.include_in_knowledge;
+    await repository.save(legacy);
+    const repeated = (await api.post(`/articles/${id}/publish`).set(headers())
+      .send({ expected_version: published.draft_version }).expect(201)).body;
+    expect(repeated.include_in_knowledge).toBe(true);
+    expect(repeated.latest_index_job_id).toBe(published.latest_index_job_id);
+    expect(await repository.eligible(id, published.document_version)).toBe(true);
+  });
+
+  test("new publications default to blogs; opting in queues indexing and opting out cancels it", async () => {
+    const { article_id: id } = await create();
+    const saved = await save(id, 1);
+    await api.post(`/articles/${id}/publish`).set(headers()).send({ expected_version: saved.draft_version, include_in_knowledge: 'false' }).expect(422);
+    const blog = (await api.post(`/articles/${id}/publish`).set(headers()).send({ expected_version: saved.draft_version }).expect(201)).body;
+    expect(blog.include_in_knowledge).toBe(false);
+    expect(blog.latest_index_job_id).toBeNull();
+    expect(blog.index_status).toBeNull();
+    expect((await api.get(`/public/articles/${id}`).expect(200)).body.title).toBe(saved.draft.title);
+    const articles = app.get(ArticleRepository);
+    const hit = (version: number) => ({ pointId: 'blog', score: 1, payload: { doc_id: id, document_version: version } });
+    expect(await articles.filterHits([hit(blog.document_version)])).toHaveLength(0);
+    await api.post(`/articles/${id}/reindex`).set(headers()).send({ expected_version: blog.draft_version }).expect(409);
+    const included = await publish(id, blog.draft_version, true);
+    expect(included.include_in_knowledge).toBe(true);
+    expect(included.index_status).toBe('queued');
+    expect(included.latest_index_job_id).toBeTruthy();
+    expect(await articles.filterHits([hit(included.document_version)])).toHaveLength(1);
+    const duplicate = await publish(id, included.draft_version, true);
+    expect(duplicate.latest_index_job_id).toBe(included.latest_index_job_id);
+    const excluded = await publish(id, included.draft_version, false);
+    expect(excluded.document_version).toBe(included.document_version + 1);
+    expect(excluded.draft_version).toBeGreaterThan(included.draft_version);
+    expect(excluded.latest_index_job_id).toBeNull();
+    expect((await app.get(IndexJobsService).get(included.latest_index_job_id))?.status).toBe('canceled');
+    expect(await articles.filterHits([hit(included.document_version), hit(excluded.document_version)])).toHaveLength(0);
+    expect(await articles.eligible(id, excluded.document_version)).toBe(false);
+    await api.get(`/public/articles/${id}`).expect(200);
+    await api.post(`/articles/${id}/publish`).set(headers()).send({ expected_version: included.draft_version, include_in_knowledge: true }).expect(409);
+    const resumed = await publish(id, excluded.draft_version, true);
+    expect(resumed.index_status).toBe('queued');
+    expect(resumed.latest_index_job_id).not.toBe(included.latest_index_job_id);
+  });
+
+  test("opting out while indexing keeps the blog readable and cannot activate vectors", async () => {
+    const { article_id: id } = await create();
+    const saved = await save(id, 1);
+    const published = await publish(id, saved.draft_version, true);
+    const retrieval = app.get(RetrievalService);
+    const vectors = app.get(VectorStoreService);
+    const indexing = jest.spyOn(retrieval, 'indexDocument').mockImplementationOnce(async () => {
+      await app.get(ArticlesService).publish(id, published.draft_version, context, false);
+      return 1;
+    });
+    const activation = jest.spyOn(vectors, 'activateDocumentVersion');
+    try {
+      await app.get(IndexWorkerService).runOnce('opt-out-worker', published.latest_index_job_id);
+      expect(indexing).toHaveBeenCalled();
+      expect(activation).not.toHaveBeenCalledWith(id, published.document_version);
+      await api.get(`/public/articles/${id}`).expect(200);
+      expect((await api.get(`/articles/${id}`).set(headers())).body.include_in_knowledge).toBe(false);
+    } finally { indexing.mockRestore(); activation.mockRestore(); }
   });
 
   test("drafts are owner scoped and never public; stale writes cannot replace content", async () => {

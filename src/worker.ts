@@ -22,11 +22,14 @@ process.once('SIGINT', stop);
 process.once('SIGTERM', stop);
 // 无限循环 ，不断调用 worker.runOnce(workerId) 。
 while (!closing) {
-  const [indexJob, memoryJob] = await Promise.all([
+  const results = await Promise.allSettled([
     worker.runOnce(workerId),
     memoryWorker.runOnce(`${workerId}-memory`),
   ]);
-  if (!indexJob && !memoryJob)
+  for (const result of results) if (result.status === 'rejected') {
+    console.warn('Worker poll failed; retrying on the next poll:', result.reason instanceof Error ? result.reason.message : 'Unknown worker error');
+  }
+  if (results.some(result => result.status === 'rejected') || results.every(result => result.status === 'fulfilled' && !result.value))
     await new Promise((resolve) => setTimeout(resolve, config.indexWorkerPollSeconds * 1000));
 }
 await app.close();

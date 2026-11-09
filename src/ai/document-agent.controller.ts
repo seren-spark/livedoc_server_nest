@@ -12,7 +12,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { CurrentAccess } from "../auth/access-context.decorator.js";
 import type { AccessContext } from "../common/types.js";
 import { AppConfig } from "../config/app-config.js";
-import { DocumentAgentDto, AgentFeedbackDto } from "./document-agent.dto.js";
+import { DocumentAgentDto, AgentFeedbackDto, AgentRestoreDto } from "./document-agent.dto.js";
 import { DocumentAgentService } from "./document-agent.service.js";
 import { AgentAuditService } from "./agent-audit.service.js";
 import { AgentSettingsDto, AgentSettingsService } from './agent-settings.service.js';
@@ -87,7 +87,14 @@ export class DocumentAgentController {
     @Param("id") id: string,
     @CurrentAccess() c: AccessContext,
   ) {
-    return this.audit.get(id, c);
+    return this.agent.getRun(id, c);
+  }
+  @Post("agent/:id/restore") restore(
+    @Param("id") id: string,
+    @Body() input: AgentRestoreDto,
+    @CurrentAccess() c: AccessContext,
+  ) {
+    return this.agent.restore(id, c, input.editor_json);
   }
   @Get("tool-audits") calls(
     @Query("run_id") id: string,

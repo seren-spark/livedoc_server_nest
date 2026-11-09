@@ -1,16 +1,17 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
   Optional,
 } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { DocumentCreateDto, DocumentUpdateDto } from '../common/dto.js';
-import type { AccessContext, IndexStatus, Visibility } from '../common/types.js';
+import type { AccessContext, IndexStatus, KnowledgeScope, Visibility } from '../common/types.js';
 import { DatabaseService } from '../database/database.service.js';
 import type { DocumentRecord } from './document.types.js';
-import { DocumentsRepository, mapDocumentRow } from './documents.repository.js';
+import { DocumentsRepository, mapDocumentRow, type KnowledgeDocumentVersion } from './documents.repository.js';
 import { ArticleRepository } from '../articles/article.repository.js';
 import { ArticleInteractionsRepository } from '../articles/article-interactions.repository.js';
 import { DocumentCatalog } from '../database/document-catalog.js';
@@ -31,6 +32,7 @@ export class DocumentsService {
   }
 
   async create(request: DocumentCreateDto, context: AccessContext): Promise<DocumentRecord> {
+    if (request.doc_id?.startsWith('wiki_')) throw new BadRequestException('wiki_ 文档标识由知识沉淀服务管理');
     if (request.doc_id) await this.assertUnmanaged(request.doc_id);
     this.assertTeamTarget(request.visibility, request.team_id, context);
     const now = new Date();
@@ -90,6 +92,20 @@ export class DocumentsService {
     const total = visible.length;
     const offset = (page - 1) * pageSize;
     return { items: visible.slice(offset, offset + pageSize), total };
+  }
+
+  async knowledgeFingerprint(scope: KnowledgeScope, context: AccessContext): Promise<string> {
+    // Metadata only: no document bodies or model calls are needed to detect range changes.
+    const rows: KnowledgeDocumentVersion[] = this.database.metadataEnabled
+      ? await this.repository.knowledgeVersions(scope, context)
+      : [...this.records.values()].filter(record =>
+          canAccessDocument(record, context) && scope[record.visibility] &&
+          (!scope.document_ids.length || scope.document_ids.includes(record.doc_id)) &&
+          (!this.articles?.records.has(record.doc_id) || this.articles.records.get(record.doc_id)?.state === 'published'));
+    const versions = rows.map(row => [row.doc_id, row.title, Number(row.document_version),
+      row.active_index_version == null ? null : Number(row.active_index_version), row.visibility, row.team_id ?? null]);
+    versions.sort((a, b) => String(a[0]) < String(b[0]) ? -1 : String(a[0]) > String(b[0]) ? 1 : 0);
+    return createHash('sha256').update(JSON.stringify(versions)).digest('hex');
   }
 
   async listPublicArticles(

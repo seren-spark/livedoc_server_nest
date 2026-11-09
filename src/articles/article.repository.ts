@@ -10,6 +10,7 @@ import { DatabaseService } from "../database/database.service.js";
 import type { AccessContext } from "../common/types.js";
 import type { SearchHit } from "../retrieval/vector-store.service.js";
 import type { ArticleDraft, ArticleState } from "./article.types.js";
+import { articleInKnowledge } from "./article.types.js";
 import { ArticleInteractionsRepository } from './article-interactions.repository.js';
 
 @Injectable()
@@ -114,14 +115,17 @@ export class ArticleRepository {
   async filterHits(hits: SearchHit[]): Promise<SearchHit[]> {
     const ids = [...new Set(hits.map((h) => String(h.payload.doc_id)))];
     if (!ids.length) return hits;
-    const states = new Map<string, { state: string; version: number }>();
+    const states = new Map<string, { state: string; version: number; included: boolean }>();
     if (this.database.metadataEnabled) {
       const rows = await this.database.query<{
         article_id: string;
         state: string;
         document_version: number;
+        included: string;
       }>(
-        `SELECT a.article_id,a.state,d.document_version FROM article_drafts a LEFT JOIN knowledge_documents d ON d.doc_id=a.article_id
+        `SELECT a.article_id,a.state,d.document_version,
+         COALESCE(JSON_UNQUOTE(JSON_EXTRACT(a.published_metadata,'$.include_in_knowledge')),'true') AS included
+         FROM article_drafts a LEFT JOIN knowledge_documents d ON d.doc_id=a.article_id
          WHERE a.article_id IN (${ids.map(() => "?").join(",")})`,
         ids,
       );
@@ -129,6 +133,7 @@ export class ArticleRepository {
         states.set(r.article_id, {
           state: r.state,
           version: Number(r.document_version),
+          included: r.included !== 'false',
         }),
       );
     } else
@@ -138,13 +143,14 @@ export class ArticleRepository {
           states.set(id, {
             state: r.state,
             version: this.publishedVersions.get(id) ?? 0,
+            included: articleInKnowledge(r),
           });
       });
     return hits.filter((hit) => {
       const r = states.get(String(hit.payload.doc_id));
       return (
         !r ||
-        (r.state === "published" &&
+        (r.state === "published" && r.included &&
           r.version === Number(hit.payload.document_version))
       );
     });
@@ -187,7 +193,7 @@ export class ArticleRepository {
             [id],
           );
           if (
-            article.state !== "published" ||
+            article.state !== "published" || !articleInKnowledge(article) ||
             Number(rows[0]?.document_version) !== version
           )
             return false;

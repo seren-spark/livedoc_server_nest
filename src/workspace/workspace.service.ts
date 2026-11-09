@@ -270,7 +270,15 @@ export class WorkspaceService {
       }
       return { result, revision: state.revision };
     };
+    return this.write(context, execute);
+  }
+
+  private async write<T>(
+    context: AccessContext,
+    execute: (manager?: EntityManager) => Promise<T>,
+  ): Promise<T> {
     if (this.db.metadataEnabled) return this.db.transaction(execute);
+    const key = keyFor(context);
     const pending = (this.writes.get(key) ?? Promise.resolve())
       .catch(() => undefined)
       .then(() => execute());
@@ -539,17 +547,7 @@ export class WorkspaceService {
       }
       return { status: "purged", ids, revision: state.revision + 1 };
     };
-    if (this.db.metadataEnabled) return this.db.transaction(execute);
-    const key = keyFor(context);
-    const pending = (this.writes.get(key) ?? Promise.resolve())
-      .catch(() => undefined)
-      .then(() => execute());
-    this.writes.set(key, pending);
-    try {
-      return await pending;
-    } finally {
-      if (this.writes.get(key) === pending) this.writes.delete(key);
-    }
+    return this.write(context, execute);
   }
   private async suspend(ids: string[]) {
     for (const id of ids) {
@@ -665,7 +663,7 @@ export class WorkspaceService {
     revision: number,
   ) {
     const remove = new Set<string>();
-    const outcome = await this.mutate(context, revision, (s) => {
+    return this.mutate(context, revision, (s) => {
       for (const id of ids) {
         const c = this.category(s, id, true);
         if (!c.deleted_at)
@@ -679,7 +677,6 @@ export class WorkspaceService {
       s.categories = s.categories.filter((c) => !remove.has(c.category_id));
       return [...remove];
     });
-    return outcome;
   }
   async listTemplates(context: AccessContext): Promise<NoteTemplate[]> {
     const rows = this.db.metadataEnabled

@@ -22,6 +22,8 @@ export function parseModelJson(text: string): any {
       .replace(/\s*```$/, ""),
   );
 }
+export const maxAgentPlanSteps = (maxTurns: number) => Math.min(5, Math.max(0, Math.floor((maxTurns - 4) / 3)));
+
 export function validatePlan(value: any): ExecutionPlan {
   if (
     !value ||
@@ -159,6 +161,24 @@ export function validateAgentRequest(request: DocumentAgentDto) {
   }
   if (request.confirmed_plan) validatePlan(request.confirmed_plan);
 }
+export function validateAgentMarkdown(value: unknown) {
+  if (typeof value !== "string" || !value.trim() || value.length > 200000)
+    throw new BadRequestException("生成内容包含不允许的格式或新图片");
+  const visit = (node: any) => {
+    if (["image", "imageReference", "html"].includes(node.type))
+      throw new BadRequestException("不支持原始 HTML 或新增图片，请将代码放入代码块");
+    if (["link", "definition"].includes(node.type)) {
+      let url: URL;
+      try { url = new URL(node.url, "https://livedoc.invalid"); }
+      catch { throw new BadRequestException("链接地址无效"); }
+      if (!["http:", "https:", "mailto:"].includes(url.protocol))
+        throw new BadRequestException("不允许此链接协议");
+    }
+    node.children?.forEach(visit);
+  };
+  visit(fromMarkdown(value));
+}
+
 export function validateAgentResult(
   result: any,
   request: DocumentAgentDto,
@@ -176,28 +196,7 @@ export function validateAgentResult(
     )
       throw new BadRequestException("结果引用未知资料");
   };
-  const markdown = (value: any) => {
-    if (typeof value !== "string" || !value.trim() || value.length > 200000)
-      throw new BadRequestException("生成内容包含不允许的格式或新图片");
-    const visit = (node: any) => {
-      if (["image", "imageReference", "html"].includes(node.type))
-        throw new BadRequestException(
-          "不支持原始 HTML 或新增图片，请将代码放入代码块",
-        );
-      if (["link", "definition"].includes(node.type)) {
-        let url: URL;
-        try {
-          url = new URL(node.url, "https://livedoc.invalid");
-        } catch {
-          throw new BadRequestException("链接地址无效");
-        }
-        if (!["http:", "https:", "mailto:"].includes(url.protocol))
-          throw new BadRequestException("不允许此链接协议");
-      }
-      node.children?.forEach(visit);
-    };
-    visit(fromMarkdown(value));
-  };
+  const markdown = validateAgentMarkdown;
   if (result.kind === "clarification") {
     if (
       typeof result.question !== "string" ||

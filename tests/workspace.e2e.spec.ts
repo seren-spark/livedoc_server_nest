@@ -565,6 +565,12 @@ describe("workspace and document agent API", () => {
         const context = JSON.parse(
           messages.find((m) => m.role === "user")?.content ?? "{}",
         );
+        if (context.purpose === "supervisor") {
+          const ready = context.ready.slice(0, 1);
+          return { message: { role: "assistant", content: JSON.stringify(ready.length
+            ? { action: "dispatch", task_ids: ready.map((step: any) => step.id) }
+            : { action: "compose" }) }, usage: {} };
+        }
         if (options?.role === "critic")
           return {
             message: {
@@ -596,6 +602,7 @@ describe("workspace and document agent API", () => {
           return call("finish_answer", {
             answer: "读取了两个段落",
             citation_ids: [currentCitationId],
+            handoff: { findings: [{ statement: "读取了两个段落", evidence_ids: [currentCitationId] }], missing: [], conflicts: [] },
           });
         }
         return call("propose_new_document", {

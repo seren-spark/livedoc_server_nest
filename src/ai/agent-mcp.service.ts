@@ -16,7 +16,7 @@ export class AgentMcpService implements OnModuleInit, OnModuleDestroy {
   private readonly clients = new Map<string, Client>();
   readonly tools = new Map<
     string,
-    { schema: FunctionTool; server: string; name: string }
+    { schema: FunctionTool; server: string; name: string; research?: boolean }
   >();
   readonly unavailable: string[] = [];
   constructor(private readonly config: AppConfig) {}
@@ -38,6 +38,7 @@ export class AgentMcpService implements OnModuleInit, OnModuleDestroy {
               resolve(this.config.projectRoot, "src/ai/mcp-fetch-server.ts"),
             ],
         tools_include: ["fetch"],
+        tools_research: ["fetch"],
         enabled: true,
       },
       ...this.config.mcpServers,
@@ -107,6 +108,7 @@ export class AgentMcpService implements OnModuleInit, OnModuleDestroy {
               this.tools.set(id, {
                 server: name,
                 name: tool.name,
+                research: Array.isArray(setting.tools_research) && setting.tools_research.includes(tool.name),
                 schema: {
                   type: "function",
                   function: {

@@ -15,7 +15,7 @@ import type { DocumentIndexRequest } from "../documents/document.types.js";
 import { EmbeddingService } from "../inference/embedding.service.js";
 import { RerankerService } from "../inference/reranker.service.js";
 import { ObservabilityService } from "../observability/observability.service.js";
-import { buildChunkPassage, chunkMarkdown } from "./chunker.js";
+import { chunkMarkdown } from "./chunker.js";
 import { ContextCompressorService } from "./context-compressor.service.js";
 import { SparseEmbeddingService } from "./sparse-embedding.service.js";
 import { cosineSimilarity, elapsedMs, round } from "./text-utils.js";
@@ -81,6 +81,19 @@ export class RetrievalService {
     expansionSource: ExpansionSource = "original",
     preprocessingMs = 0,
   ): Promise<{ citations: Citation[]; trace: RetrievalTrace; retrieval_debug?: RetrievalDebug }> {
+    return this.searchAuthorizedWithTrace(request, context, queryVariants, expansionSource, preprocessingMs,
+      async hits => this.catalog ? this.catalog.readableHits(hits, context) : hits);
+  }
+
+  /** Internal derived-knowledge entry: provenance is checked before reranking or compression. */
+  async searchWikiWithTrace(request: SearchDto, context: AccessContext,
+    authorize: (hits: SearchHit[]) => Promise<SearchHit[]>) {
+    return this.searchAuthorizedWithTrace(request, context, undefined, "original", 0, authorize, true);
+  }
+
+  private async searchAuthorizedWithTrace(request: SearchDto, context: AccessContext,
+    queryVariants: string[] | undefined, expansionSource: ExpansionSource, preprocessingMs: number,
+    authorize: (hits: SearchHit[]) => Promise<SearchHit[]>, wikiOnly = false): Promise<{ citations: Citation[]; trace: RetrievalTrace; retrieval_debug?: RetrievalDebug }> {
     const totalStarted = performance.now();
     //prepareQueryVariants（查询变体准备）
     const preparedQueryVariants = prepareQueryVariants(
@@ -95,9 +108,10 @@ export class RetrievalService {
       request,
       context,
       preparedQueryVariants,
+      wikiOnly,
     );
     const retrievalMs = elapsedMs(retrievalStarted);
-    const readableCandidates = this.catalog ? await this.catalog.readableHits(candidateHits, context) : candidateHits;
+    const readableCandidates = await authorize(candidateHits);
     const rerankStarted = performance.now();
     //rerank 精排
     const rerankedHits = request.rerank === false ? readableCandidates : await this.reranker.rerank(
@@ -107,14 +121,22 @@ export class RetrievalService {
     );
     const rerankMs = elapsedMs(rerankStarted);
     //去重
-    const dedupedHits = dedupeHits(this.articleDrafts ? await this.articleDrafts.filterHits(rerankedHits) : rerankedHits);
+    const seenPages = new Set<string>();
+    const readableRanked = this.articleDrafts ? await this.articleDrafts.filterHits(rerankedHits) : rerankedHits;
+    const dedupedHits = wikiOnly ? readableRanked.filter(hit => {
+      const id = String(hit.payload.doc_id);
+      if (seenPages.has(id)) return false;
+      seenPages.add(id);
+      return true;
+    }) : dedupeHits(readableRanked);
     //转换为 Citation
     const uncompressedCitations = dedupedHits
       .slice(0, request.top_k)
       .map((hit, index) => hitToCitation(index + 1, hit));
     const compressionStarted = performance.now();
     //压缩上下文
-    const citations = this.compressor.compress(uncompressedCitations, rewrittenQuery);
+    // Wiki search selects pages; WikiService supplies the verified body and original evidence.
+    const citations = wikiOnly ? uncompressedCitations : this.compressor.compress(uncompressedCitations, rewrittenQuery);
     const trace: RetrievalTrace = {
       trace_id: randomUUID().replaceAll("-", ""),
       mode: request.mode,
@@ -142,7 +164,7 @@ export class RetrievalService {
     );
     if (request.include_retrieval_debug) {
       // Apply the same publication boundary as final citations before exposing diagnostics.
-      const eligible = this.articleDrafts ? await this.articleDrafts.filterHits(readableCandidates) : readableCandidates;
+      const eligible = await authorize(this.articleDrafts ? await this.articleDrafts.filterHits(readableCandidates) : readableCandidates);
       return { citations, trace, retrieval_debug: {
         schema_version: 1, candidate_stage: 'authorized_fused_before_rerank', candidate_limit: 20,
         candidates: eligible.slice(0, 20).map((hit, index) => hitToCitation(index + 1, hit)),
@@ -225,6 +247,7 @@ export class RetrievalService {
     const candidateLimit = Math.max((options.topK ?? 5) * 4, 20);
     const denseRankings: SearchHit[][] = [];
     const keywordRankings: SearchHit[][] = [];
+    const keywordDocuments = payloads.map((payload) => [payload.chunk_id, payload] as const);
     for (const queryVariant of preparedQueryVariants) {
       const queryVector = await this.embeddings.embed(queryVariant);
       const denseHits = payloads
@@ -240,7 +263,7 @@ export class RetrievalService {
       keywordRankings.push(
         bm25Search(
           queryVariant,
-          payloads.map((payload) => [payload.chunk_id, payload] as const),
+          keywordDocuments,
           candidateLimit,
           this.sparse,
         ),
@@ -307,6 +330,7 @@ export class RetrievalService {
     request: SearchDto,
     context: AccessContext,
     preparedQueryVariants: string[], // 多个查询变体（原始查询 + 改写/扩展的查询）
+    wikiOnly = false,
   ) {
     const denseRankings: SearchHit[][] = []; // 存储每路 Dense 召回结果
     const keywordRankings: SearchHit[][] = []; // 存储每路 Sparse 召回结果
@@ -323,6 +347,7 @@ export class RetrievalService {
             request.scope,
             candidateLimit,
             this.config.similarityThreshold,
+            wikiOnly,
           ),
         );
       }
@@ -335,20 +360,16 @@ export class RetrievalService {
             context,
             request.scope,
             candidateLimit,
+            wikiOnly,
           ),
         );
       }
     }
     // 构建融合输入：标记每个结果来自哪个通道
-    const rankings =
-      request.mode === "dense"
-        ? denseRankings.map((hits) => ["dense", hits] as const)
-        : request.mode === "keyword"
-          ? keywordRankings.map((hits) => ["keyword", hits] as const)
-          : [
-              ...denseRankings.map((hits) => ["dense", hits] as const),
-              ...keywordRankings.map((hits) => ["keyword", hits] as const),
-            ];
+    const rankings = [
+      ...denseRankings.map((hits) => ["dense", hits] as const),
+      ...keywordRankings.map((hits) => ["keyword", hits] as const),
+    ];
     return {
       denseHits: mergeRankingsUnique(denseRankings), // 合并所有 Dense 结果
       keywordHits: mergeRankingsUnique(keywordRankings), // 合并所有 Sparse 结果

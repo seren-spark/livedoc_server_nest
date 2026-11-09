@@ -67,7 +67,7 @@ test("publication rolls back its public snapshot and draft state when transactio
       user_id: "alice",
       space_id: "space",
       team_ids: [],
-    }),
+    }, true),
   ).rejects.toThrow("forced enqueue failure");
   expect(database.transaction).toHaveBeenCalledTimes(1);
   expect(database.query).not.toHaveBeenCalled();

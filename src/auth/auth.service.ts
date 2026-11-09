@@ -125,7 +125,7 @@ export class AuthService implements OnModuleInit {
     return row ? this.identityWithTeams(row) : null;
   }
 
-  private async identityByUserId(userId: string): Promise<DemoIdentity | null> {
+  async identityByUserId(userId: string): Promise<DemoIdentity | null> {
     if (!this.database.metadataEnabled) {
       return [...this.users.values()].find((item) => item.identity.user_id === userId)?.identity ?? null;
     }

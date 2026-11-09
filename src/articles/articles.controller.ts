@@ -21,6 +21,7 @@ import {
   ArticleCreateDto,
   ArticleListDto,
   ArticleSaveDto,
+  ArticlePublishDto,
   ArticleVersionDto,
 } from "./article.dto.js";
 import { ArticleRepository } from "./article.repository.js";
@@ -75,10 +76,10 @@ export class ArticlesController {
   @Post("articles/:id/publish")
   publish(
     @Param("id") id: string,
-    @Body() body: ArticleVersionDto,
+    @Body() body: ArticlePublishDto,
     @CurrentAccess() context: AccessContext,
   ) {
-    return this.articles.publish(id, body.expected_version, context);
+    return this.articles.publish(id, body.expected_version, context, body.include_in_knowledge);
   }
   @Post("articles/:id/withdraw")
   withdraw(

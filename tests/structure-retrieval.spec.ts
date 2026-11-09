@@ -9,7 +9,7 @@ import type { ObservabilityService } from '../src/observability/observability.se
 import { ContextCompressorService } from '../src/retrieval/context-compressor.service.js';
 import { RetrievalService } from '../src/retrieval/retrieval.service.js';
 import { SparseEmbeddingService } from '../src/retrieval/sparse-embedding.service.js';
-import { VectorStoreService } from '../src/retrieval/vector-store.service.js';
+import { VectorStoreService, type SearchHit } from '../src/retrieval/vector-store.service.js';
 import { parseMarkdown } from '../src/retrieval/markdown-structure.js';
 
 const context: AccessContext = { user_id: 'alice', space_id: 'space', team_ids: [] };
@@ -35,6 +35,20 @@ function createServices(overrides: Record<string, unknown> = {}) {
 }
 
 describe('structure-aware retrieval and compression', () => {
+  test('wiki discovery selects distinct pages before top-k and does not compress discovery snippets', async () => {
+    const { retrieval, compressor } = createServices();
+    const hits = ['a', 'a', 'a', 'b', 'c'].map((doc, index) => ({ pointId: String(index), score: 10 - index,
+      payload: { doc_id: doc, chunk_id: String(index), chunk_index: index, document_version: 1,
+        title: doc, content: 'shared introduction '.repeat(10) + doc, source_content: doc } }));
+    jest.spyOn(retrieval as any, 'retrieveMultiQuery').mockResolvedValue({ denseHits: hits, keywordHits: [], candidateHits: hits });
+    const compress = jest.spyOn(compressor, 'compress');
+    const authorize = jest.fn(async (candidates: SearchHit[]) => candidates);
+    const result = await retrieval.searchWikiWithTrace({ query: 'topic', context: '', mode: 'dense', top_k: 3,
+      scope: { private: true, public: false, team: false, document_ids: [] } }, context, authorize);
+    expect(result.citations.map(citation => citation.doc_id)).toEqual(['a', 'b', 'c']);
+    expect(authorize).toHaveBeenCalledWith(hits);
+    expect(compress).not.toHaveBeenCalled();
+  });
   test('diagnostics capture actual pre-rerank candidates, require opt-in and preserve default ranking', async () => {
     const { retrieval, config } = createServices({ rerankProvider: 'bge' });
     const hits = ['first', 'second'].map((id, i) => ({ pointId: id, score: 1 / (i + 1), payload: {

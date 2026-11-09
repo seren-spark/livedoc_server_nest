@@ -1,1 +1,1 @@
-export const CURRENT_SCHEMA_VERSION = '2026101901_agent_user_settings';
+export const CURRENT_SCHEMA_VERSION = '2026110301_agent_graph';

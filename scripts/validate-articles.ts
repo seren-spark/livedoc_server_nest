@@ -95,11 +95,26 @@ try {
     draft.content,
   );
   check("MySQL 草稿持久化及匿名隔离");
-  const published = (
+  const blog = (
     await api
       .post("/articles/" + id + "/publish")
       .set(auth)
       .send({ expected_version: saved.draft_version })
+      .expect(201)
+  ).body;
+  assert.equal(blog.include_in_knowledge, false);
+  assert.equal(blog.latest_index_job_id, null);
+  assert.equal(blog.index_status, null);
+  await api.get("/public/articles/" + id).expect(200);
+  await api
+    .get("/public/articles/" + id + "/assets/" + image.asset_id + "/content")
+    .expect(200);
+  check("默认仅发布博客，不创建索引任务，图文仍可匿名阅读");
+  const published = (
+    await api
+      .post("/articles/" + id + "/publish")
+      .set(auth)
+      .send({ expected_version: blog.draft_version, include_in_knowledge: true })
       .expect(201)
   ).body;
   const publicRecord = (await api.get("/public/articles/" + id).expect(200))
@@ -159,7 +174,7 @@ try {
         ...draft,
         title: marker + " 更新",
         content: draft.content.replace("蓝绿色", "琥珀色"),
-        expected_version: saved.draft_version,
+        expected_version: published.draft_version,
       })
       .expect(200)
   ).body;
@@ -204,6 +219,31 @@ try {
   await api.get("/public/articles/" + id).expect(200);
   await index(republished.latest_index_job_id);
   check("相同链接再次发布");
+  const blogOnly = (
+    await api
+      .post("/articles/" + id + "/publish")
+      .set(auth)
+      .send({ expected_version: republished.draft_version, include_in_knowledge: false })
+      .expect(201)
+  ).body;
+  assert.equal(blogOnly.include_in_knowledge, false);
+  assert.equal(blogOnly.latest_index_job_id, null);
+  await api.get("/public/articles/" + id).expect(200);
+  await api
+    .get("/public/articles/" + id + "/assets/" + image.asset_id + "/content")
+    .expect(200);
+  assert(!(await search()).some((h: { doc_id: string }) => h.doc_id === id));
+  check("取消入库后旧向量退出检索，公开文章及图片仍可阅读");
+  const resumed = (
+    await api
+      .post("/articles/" + id + "/publish")
+      .set(auth)
+      .send({ expected_version: blogOnly.draft_version, include_in_knowledge: true })
+      .expect(201)
+  ).body;
+  await index(resumed.latest_index_job_id);
+  assert((await search()).some((h: { doc_id: string }) => h.doc_id === id));
+  check("重新勾选自动排队，同一文章恢复知识检索");
   report.completed_at = new Date().toISOString();
   await mkdir("data/validation", { recursive: true });
   await writeFile(

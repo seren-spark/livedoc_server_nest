@@ -128,8 +128,14 @@ export class AppConfig {
   readonly agentPlanModel = process.env.AGENT_PLAN_MODEL || this.llmModel;
   readonly agentCriticModel = process.env.AGENT_CRITIC_MODEL || this.llmModel;
   readonly agentTimeoutSeconds = Number(process.env.AGENT_TIMEOUT_SECONDS ?? 300);
-  readonly agentMaxToolCalls = Number(process.env.AGENT_MAX_TOOL_CALLS ?? 12);
+  readonly agentGraphEnabled = boolEnv('AGENT_GRAPH_ENABLED', false);
+  readonly agentGraphRetentionDays = Number(process.env.AGENT_GRAPH_RETENTION_DAYS ?? 7);
+  readonly agentMaxToolCalls = Number(process.env.AGENT_MAX_TOOL_CALLS ?? 24);
   readonly agentMaxOutputTokens = Number(process.env.AGENT_MAX_OUTPUT_TOKENS ?? 4096);
+  readonly agentMaxTotalTokens = Number(process.env.AGENT_MAX_TOTAL_TOKENS ?? 120000);
+  readonly agentMaxModelRequests = Number(process.env.AGENT_MAX_MODEL_REQUESTS ?? 30);
+  readonly agentFinalizationTokens = Number(process.env.AGENT_FINALIZATION_TOKENS ?? 8192);
+  readonly agentMaxConcurrentRuns = Number(process.env.AGENT_MAX_CONCURRENT_RUNS ?? 6);
   readonly memoryStore = process.env.MEMORY_STORE ?? this.metadataStore;
   readonly memoryMaxMessages = Number(process.env.MEMORY_MAX_MESSAGES ?? 12);
   readonly memoryMaxTurns = Number(process.env.MEMORY_MAX_TURNS ?? 6);
@@ -204,6 +210,9 @@ export class AppConfig {
       query_expansion_enabled: this.queryExpansionEnabled,
       query_expansion_max_variants: this.queryExpansionMaxVariants,
       agent_tool_selection: this.agentToolSelection,
+      agent_max_total_tokens: this.agentMaxTotalTokens,
+      agent_max_model_requests: this.agentMaxModelRequests,
+      agent_finalization_tokens: this.agentFinalizationTokens,
       storage_provider: this.storageProvider,
       docling_python: this.doclingPython,
       docling_script: this.doclingScript,
@@ -228,6 +237,10 @@ export class AppConfig {
       SPARSE_EMBEDDING_PROVIDER: this.sparseEmbeddingProvider === 'qdrant_idf',
       RERANK_PROVIDER: this.rerankProvider === 'bge',
       AGENT_TOOL_SELECTION: this.agentToolSelection === 'llm',
+      AGENT_MAX_TOTAL_TOKENS: Number.isInteger(this.agentMaxTotalTokens) && this.agentMaxTotalTokens > 0,
+      AGENT_MAX_MODEL_REQUESTS: Number.isInteger(this.agentMaxModelRequests) && this.agentMaxModelRequests >= 3,
+      AGENT_FINALIZATION_TOKENS: Number.isInteger(this.agentFinalizationTokens) && this.agentFinalizationTokens >= 0 && this.agentFinalizationTokens < this.agentMaxTotalTokens,
+      AGENT_MAX_CONCURRENT_RUNS: Number.isInteger(this.agentMaxConcurrentRuns) && this.agentMaxConcurrentRuns > 0,
       LLM_API_KEY: Boolean(this.llmApiKey),
       LLM_MODEL: Boolean(this.llmModel),
       DATABASE_URL: Boolean(this.databaseUrl),
@@ -248,6 +261,10 @@ export class AppConfig {
   }
 
   validateRuntime(): void {
+    if (!Number.isInteger(this.agentGraphRetentionDays) || this.agentGraphRetentionDays < 1)
+      throw new Error('AGENT_GRAPH_RETENTION_DAYS must be a positive integer');
+    if (this.agentGraphEnabled && this.metadataStore !== 'mysql')
+      throw new Error('AGENT_GRAPH_ENABLED requires METADATA_STORE=mysql');
     if (this.runtimeMode === 'test' && this.appEnv !== 'production') return;
     const invalid = this.realMisconfigurations();
     if (invalid.length) {
@@ -263,6 +280,8 @@ export class AppConfig {
       app_env: this.appEnv,
       runtime_mode: this.runtimeMode,
       metadata_store: this.metadataStore,
+      agent_graph_enabled: this.agentGraphEnabled,
+      agent_graph_retention_days: this.agentGraphRetentionDays,
       vector_store: this.vectorStore,
       qdrant_collection: this.qdrantCollection,
       embedding_provider: this.embeddingProvider,

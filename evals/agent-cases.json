@@ -1,0 +1,77 @@
+[
+  {
+    "id": "facts",
+    "query": "查询 Orion 项目的负责人和回滚窗口，逐项列出并引用资料。",
+    "sources": [
+      { "title": "Orion 人员安排", "content": "Orion 项目的负责人为陈青，备份负责人为周宁。" },
+      { "title": "Orion 回滚安排", "content": "Orion 项目的回滚窗口为上线后的 48 小时，超过窗口需要重新评审。" }
+    ],
+    "checks": ["陈青", "48", "回滚"],
+    "min_citations": 2,
+    "facts": [
+      { "answer_pattern": "陈青", "evidence_pattern": "负责人为陈青", "source_index": 0 },
+      { "answer_pattern": "48", "evidence_pattern": "48 小时", "source_index": 1 }
+    ]
+  },
+  {
+    "id": "conflict",
+    "query": "查询 Cedar 项目的预算金额。若资料冲突，请同时列出不同金额并说明冲突，不自行选择。",
+    "sources": [
+      { "title": "Cedar 计划甲", "content": "Cedar 项目计划甲记录：预算为 120 万元。此文件未注明优先级。" },
+      { "title": "Cedar 计划乙", "content": "Cedar 项目计划乙记录：预算为 180 万元。此文件未注明优先级。" }
+    ],
+    "checks": ["120", "180", "冲突|不一致|矛盾"],
+    "min_citations": 2,
+    "facts": [
+      { "answer_pattern": "120", "evidence_pattern": "120 万元", "source_index": 0 },
+      { "answer_pattern": "180", "evidence_pattern": "180 万元", "source_index": 1 }
+    ]
+  },
+  {
+    "id": "missing",
+    "query": "查询 Maple 项目的负责人和预算金额。未记录的信息明确说明，不能编造金额。",
+    "sources": [
+      { "title": "Maple 分工", "content": "Maple 项目负责人为林川。" },
+      { "title": "Maple 审批", "content": "Maple 项目预算尚未审批，当前资料没有预算金额。" }
+    ],
+    "checks": ["林川", "预算", "未|没有|缺|不明确|无法"],
+    "min_citations": 2,
+    "facts": [
+      { "answer_pattern": "林川", "evidence_pattern": "负责人为林川", "source_index": 0 },
+      { "answer_pattern": "预算.*(未|没有|缺|不明确|无法)", "evidence_pattern": "没有预算金额", "source_index": 1 }
+    ],
+    "forbidden_patterns": ["预算.{0,8}(为|是|约|共|计).{0,3}[0-9]+.{0,3}(元|万)"]
+  },
+  {
+    "id": "conditional",
+    "query": "查询 Birch 项目的自动回滚条件和例外处理。逐项列出阈值、持续时间及例外，不能漏掉条件。",
+    "sources": [
+      { "title": "Birch 回滚规则", "content": "Birch 自动回滚必须同时满足两个条件：错误率超过5%，并且连续持续10分钟。单次峰值不触发自动回滚。" },
+      { "title": "Birch 例外规则", "content": "Birch 若正处于数据迁移阶段，必须暂停自动回滚，先由值班负责人确认数据一致性。" }
+    ],
+    "checks": ["5\\s*%", "10\\s*分钟", "迁移", "暂停", "确认.*一致性"],
+    "min_citations": 2,
+    "facts": [
+      { "answer_pattern": "5\\s*%", "evidence_pattern": "错误率超过5%", "source_index": 0 },
+      { "answer_pattern": "10\\s*分钟", "evidence_pattern": "连续持续10分钟", "source_index": 0 },
+      { "answer_pattern": "迁移", "evidence_pattern": "暂停自动回滚", "source_index": 1 }
+    ]
+  },
+  {
+    "id": "dependent_composition",
+    "query": "查询 Pine 上线检查清单，整合审批和回滚要求，明确负责人、审批凭证及窗口，保留全部限制并逐项引用。",
+    "sources": [
+      { "title": "Pine 审批要求", "content": "Pine 上线审批由孟夏负责，必须保留编号为AP-42的签字审批单；聊天口头同意不能代替签字审批单。" },
+      { "title": "Pine 回滚要求", "content": "Pine 回滚窗口为发布后24小时，回滚前必须先完成快照校验。窗口外必须重新审批。" }
+    ],
+    "checks": ["孟夏", "AP-42", "24", "快照", "重新审批", "口头.*(不能|不可|不)"],
+    "min_citations": 2,
+    "compose_step": true,
+    "facts": [
+      { "answer_pattern": "孟夏", "evidence_pattern": "孟夏负责", "source_index": 0 },
+      { "answer_pattern": "AP-42", "evidence_pattern": "AP-42", "source_index": 0 },
+      { "answer_pattern": "24", "evidence_pattern": "24小时", "source_index": 1 },
+      { "answer_pattern": "快照", "evidence_pattern": "先完成快照校验", "source_index": 1 }
+    ]
+  }
+]

@@ -128,6 +128,9 @@ app.get(LlmService).agentTurn = async (messages, tools) => {
       citation_ids: [],
     };
   }
+  if (context.step && name === "finish_answer") args.handoff = {
+    findings: [], missing: ["预览固定响应，不代表真实资料检索结果"], conflicts: [],
+  };
   return {
     message: {
       role: "assistant",

@@ -29,6 +29,7 @@ export interface DocumentRecord {
 }
 
 export interface DocumentIndexRequest {
+  knowledge_layer?: "wiki";
   doc_id: string;
   space_id: string;
   title: string;

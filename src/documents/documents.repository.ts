@@ -1,4 +1,4 @@
-import type { AccessContext, IndexStatus, Visibility } from '../common/types.js';
+import type { AccessContext, IndexStatus, KnowledgeScope, Visibility } from '../common/types.js';
 import { DatabaseService } from '../database/database.service.js';
 import type { DocumentRecord } from './document.types.js';
 import type { EntityManager } from 'typeorm';
@@ -12,6 +12,8 @@ export interface DocumentListFilters {
   team_id?: string;
   index_status?: IndexStatus;
 }
+export type KnowledgeDocumentVersion = Pick<DocumentRecord,
+  'doc_id' | 'title' | 'document_version' | 'active_index_version' | 'visibility' | 'team_id'>;
 
 const DOCUMENT_COLUMNS = `category_id,deleted_at,delete_batch_id,doc_id,space_id,title,content,visibility,source_type,tags,team_id,
   owner_id,url,editor_content,source_import_id,document_version,index_status,
@@ -19,6 +21,32 @@ const DOCUMENT_COLUMNS = `category_id,deleted_at,delete_batch_id,doc_id,space_id
 
 export class DocumentsRepository {
   constructor(private readonly database: DatabaseService) {}
+
+  async knowledgeVersions(scope: KnowledgeScope, context: AccessContext): Promise<KnowledgeDocumentVersion[]> {
+    const domains: string[] = [];
+    const params: unknown[] = [];
+    if (scope.private) {
+      domains.push("(d.visibility='private' AND d.space_id=? AND d.owner_id=?)");
+      params.push(context.space_id, context.user_id);
+    }
+    if (scope.team && context.team_ids.length) {
+      domains.push(`(d.visibility='team' AND d.space_id=? AND d.team_id IN (${context.team_ids.map(() => '?').join(',')}))`);
+      params.push(context.space_id, ...context.team_ids);
+    }
+    if (scope.public) domains.push("d.visibility='public'");
+    if (!domains.length) return [];
+    let ids = '';
+    if (scope.document_ids.length) {
+      ids = ` AND d.doc_id IN (${scope.document_ids.map(() => '?').join(',')})`;
+      params.push(...scope.document_ids);
+    }
+    return this.database.query<KnowledgeDocumentVersion>(
+      `SELECT d.doc_id,d.title,d.document_version,d.active_index_version,d.visibility,d.team_id
+       FROM knowledge_documents d WHERE d.deleted_at IS NULL AND (${domains.join(' OR ')})${ids}
+       AND NOT EXISTS (SELECT 1 FROM article_drafts a WHERE a.article_id=d.doc_id AND a.state<>'published')`,
+      params,
+    );
+  }
 
   async saveSnapshot(record: DocumentRecord, manager: EntityManager): Promise<void> {
     await manager.query(`INSERT INTO knowledge_documents

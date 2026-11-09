@@ -18,14 +18,18 @@ export interface ArticleDraft {
   draft_version: number;
   draft: ArticleContent;
   published_draft_version: number | null;
-  published_metadata: Pick<
+  published_metadata: (Pick<
     ArticleContent,
     "summary" | "cover_asset_id" | "asset_ids"
-  > | null;
+  > & { include_in_knowledge?: boolean }) | null;
   published_at: Date | null;
   last_published_at: Date | null;
   created_at: Date;
   updated_at: Date;
+}
+export function articleInKnowledge(article: ArticleDraft): boolean {
+  // Existing publications were indexed before this choice was introduced.
+  return article.published_metadata != null && article.published_metadata.include_in_knowledge !== false;
 }
 export interface PublicArticle extends DocumentRecord {
   like_count: number;

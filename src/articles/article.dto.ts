@@ -1,6 +1,7 @@
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsIn,
   IsInt,
   IsObject,
@@ -51,6 +52,11 @@ export class ArticleSaveDto extends ArticleVersionDto {
   @IsString({ each: true })
   @MaxLength(64, { each: true })
   asset_ids: string[] = [];
+}
+export class ArticlePublishDto extends ArticleVersionDto {
+  @IsOptional()
+  @IsBoolean()
+  include_in_knowledge?: boolean;
 }
 export class ArticleListDto extends PaginationQueryDto {
   @IsOptional()

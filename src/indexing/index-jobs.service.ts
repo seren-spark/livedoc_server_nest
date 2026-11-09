@@ -40,15 +40,12 @@ export class IndexJobsService {
     manager?: EntityManager,
   ): Promise<IndexJobRecord> {
     //1. 先去查"同一篇文档的同一个版本，当前是否已有活跃任务"。
-    const duplicate = manager ? null : await this.activeFor(
-      request.doc_id,
-      request.document_version,
-    );
-    if (duplicate) return duplicate;
-    //查该文档全部历史任务，再过滤出 同版本 的任务。目的是取 generation 的最大值。
+    // Reuse the same version history for active-job deduplication and generation.
     const previous = (manager ? [] : await this.forDocument(request.doc_id)).filter(
       (item) => item.document_version === request.document_version,
     );
+    const duplicate = previous.find((item) => ACTIVE.includes(item.status));
+    if (duplicate) return duplicate;
     const now = new Date();
     //dedupeKey 是数据库去重键，语义是"同一篇文档的同一版本最多只能有一个未完成的任务"。
     const dedupeKey = `${request.doc_id}:${request.document_version}`;
@@ -68,7 +65,7 @@ export class IndexJobsService {
       //哪个空间
       space_id: context.space_id,
       request_payload: request,
-      config_fingerprint: this.configFingerprint(),
+      config_fingerprint: this.config.configFingerprint,
       dedupe_key: dedupeKey,
       worker_id: null,
       lease_expires_at: null,
@@ -144,20 +141,6 @@ export class IndexJobsService {
     await this.store.deleteWhere({whereSql:'doc_id=?',params:[docId],predicate:job=>job.doc_id===docId});
   }
 
-  // 检查文档是否有活跃索引任务（queued/running/retry_wait）
-  private async activeFor(
-    docId: string,
-    version: number,
-  ): Promise<IndexJobRecord | null> {
-    const jobs = await this.forDocument(docId);
-    return (
-      jobs.find(
-        (item) =>
-          item.document_version === version && ACTIVE.includes(item.status),
-      ) ?? null
-    );
-  }
-
   // 获取文档所有索引任务（包括已完成）
   private async forDocument(docId: string): Promise<IndexJobRecord[]> {
     if (!this.database.indexJobsEnabled)
@@ -202,7 +185,4 @@ export class IndexJobsService {
     return job ?? this.require(jobId);
   }
 
-  private configFingerprint(): string {
-    return this.config.configFingerprint;
-  }
 }

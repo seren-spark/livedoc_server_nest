@@ -25,6 +25,7 @@ import { AuthRepository } from "../auth/auth.repository.js";
 import { ArticleRepository } from "./article.repository.js";
 import {
   articleSummary,
+  articleInKnowledge,
   referencedAssets,
   type ArticleDraft,
   type PublicArticle,
@@ -102,11 +103,13 @@ export class ArticlesService {
   async own(id: string, context: AccessContext) {
     const article = await this.repository.requireOwner(id, context);
     const document = await this.documents.get(id);
+    const included = articleInKnowledge(article);
     return {
       ...article,
-      index_status: document?.index_status ?? null,
-      index_error: document?.index_error ?? null,
-      latest_index_job_id: document?.latest_index_job_id ?? null,
+      include_in_knowledge: included,
+      index_status: included ? document?.index_status ?? null : null,
+      index_error: included ? document?.index_error ?? null : null,
+      latest_index_job_id: included ? document?.latest_index_job_id ?? null : null,
       document_version: document?.document_version ?? null,
       assets: (await this.assets.list({ doc_id: id })).map((a) => ({
         asset_id: a.asset_id,
@@ -153,13 +156,16 @@ export class ArticlesService {
     return this.own(id, context);
   }
 
-  async publish(id: string, expectedVersion: number, context: AccessContext) {
+  async publish(id: string, expectedVersion: number, context: AccessContext, includeInKnowledge?: boolean) {
     let previousAssets: string[] = [];
     await this.write(id, context, async (article, manager) => {
       this.assertVersion(article, expectedVersion);
+      const previousChoice = articleInKnowledge(article);
+      const included = includeInKnowledge ?? previousChoice;
       if (
         article.state === "published" &&
-        article.published_draft_version === article.draft_version
+        article.published_draft_version === article.draft_version &&
+        previousChoice === included
       )
         return;
       if (!article.draft.title.trim() || !article.draft.content.trim())
@@ -167,6 +173,7 @@ export class ArticlesService {
           "Title and content are required to publish.",
         );
       const before = await this.snapshot(id, manager);
+      if (article.published_metadata && previousChoice !== included) article.draft_version += 1;
       previousAssets = [
         ...article.draft.asset_ids,
         ...(article.published_metadata?.asset_ids ?? []),
@@ -198,6 +205,7 @@ export class ArticlesService {
       article.state = "published";
       article.published_draft_version = article.draft_version;
       article.published_metadata = {
+        include_in_knowledge: included,
         summary: article.draft.summary.trim() || articleSummary(doc.content),
         cover_asset_id: article.draft.cover_asset_id,
         asset_ids: referencedAssets(article.draft),
@@ -210,14 +218,11 @@ export class ArticlesService {
           doc,
           manager,
         );
-      const job = await this.jobs.enqueue(
-        toIndexRequest(doc),
-        context,
-        false,
-        manager,
-      );
-      doc.index_status = "queued";
-      doc.latest_index_job_id = job.job_id;
+      if (included) {
+        const job = await this.jobs.enqueue(toIndexRequest(doc), context, false, manager);
+        doc.index_status = "queued";
+        doc.latest_index_job_id = job.job_id;
+      } else if (before) await this.cancelJobs(id, manager);
       await this.repository.save(article, manager);
       if (manager)
         await new DocumentsRepository(this.repository.database).saveSnapshot(
@@ -264,13 +269,7 @@ export class ArticlesService {
           this.repository.publishedVersions.set(id, doc.document_version);
         }
       }
-      if (manager)
-        await manager.query(
-          `UPDATE index_jobs SET status='canceled',dedupe_key=NULL,worker_id=NULL,lease_expires_at=NULL,
-        finished_at=?,updated_at=? WHERE doc_id=? AND status IN ('queued','running','retry_wait')`,
-          [new Date(), new Date(), id],
-        );
-      else await this.jobs.cancelDocument(id);
+      await this.cancelJobs(id, manager);
       await this.repository.save(article, manager);
     });
     const result = await this.own(id, context);
@@ -286,6 +285,8 @@ export class ArticlesService {
       this.assertVersion(article, expectedVersion);
       if (article.state !== "published")
         throw new ConflictException("Publish this article before indexing it.");
+      if (!articleInKnowledge(article))
+        throw new ConflictException("This article is not included in the knowledge base. Enable it when publishing first.");
       const doc = await this.snapshot(id, manager);
       if (!doc) throw new NotFoundException();
       const job = await this.jobs.enqueue(
@@ -363,6 +364,14 @@ export class ArticlesService {
         message: "Article changed in another session. Reload before saving.",
         current_version: article.draft_version,
       });
+  }
+  private async cancelJobs(id: string, manager?: EntityManager) {
+    if (manager) await manager.query(
+      `UPDATE index_jobs SET status='canceled',dedupe_key=NULL,worker_id=NULL,lease_expires_at=NULL,
+       finished_at=?,updated_at=? WHERE doc_id=? AND status IN ('queued','running','retry_wait')`,
+      [new Date(), new Date(), id],
+    );
+    else await this.jobs.cancelDocument(id);
   }
   private async cleanup(
     id: string,

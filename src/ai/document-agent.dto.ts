@@ -6,6 +6,7 @@ import {
   IsIn,
   IsNotEmpty,
   IsOptional,
+  IsObject,
   IsString,
   MaxLength,
 } from "class-validator";
@@ -33,8 +34,19 @@ export class DocumentAgentDto {
   @IsOptional() @Allow() confirmed_plan?: ExecutionPlan;
 }
 export class AgentFeedbackDto {
-  @IsIn(["accepted", "rejected", "conflict", "created", "discarded"])
+  @IsIn([
+    "accepted",
+    "rejected",
+    "conflict",
+    "created",
+    "discarded",
+    "helpful",
+    "incorrect",
+  ])
   action!: string;
   @IsOptional() @IsString() edit_id?: string;
   @IsOptional() @IsString() document_id?: string;
+}
+export class AgentRestoreDto {
+  @IsObject() editor_json!: Record<string, unknown>;
 }

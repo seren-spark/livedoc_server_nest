@@ -1,5 +1,5 @@
-import type { AccessContext } from '../common/types.js';
-import { DatabaseService } from '../database/database.service.js';
+import type { AccessContext } from "../common/types.js";
+import { DatabaseService } from "../database/database.service.js";
 
 export interface ConversationTurnRow {
   turn_id: string;
@@ -29,12 +29,14 @@ export class ConversationMemoryRepository {
     maxTurns: number;
   }): Promise<void> {
     await this.database.transaction(async (manager) => {
-      await manager.query('DELETE FROM conversation_turns WHERE expires_at<=UTC_TIMESTAMP(6)');
+      await manager.query(
+        "DELETE FROM conversation_turns WHERE expires_at<=UTC_TIMESTAMP(6)",
+      );
       await manager.query(
         `INSERT INTO conversation_turns
           (turn_id,conversation_id,user_id,space_id,doc_id,user_content,
            assistant_content,created_at,expires_at)
-         VALUES (?,?,?,?,?,?,?,?,?)`,
+         VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE turn_id=turn_id`,
         [
           input.turnId,
           input.conversationId,
@@ -50,7 +52,7 @@ export class ConversationMemoryRepository {
       const rows = (await manager.query(
         `SELECT turn_id FROM conversation_turns
          WHERE conversation_id=? AND user_id=? AND space_id=?
-           AND ${input.docId ? 'doc_id=?' : 'doc_id IS NULL'}
+           AND ${input.docId ? "doc_id=?" : "doc_id IS NULL"}
          ORDER BY created_at DESC`,
         [
           input.conversationId,
@@ -78,16 +80,26 @@ export class ConversationMemoryRepository {
     const rows = await this.database.query<ConversationTurnRow>(
       `SELECT turn_id,user_content,assistant_content,created_at FROM conversation_turns
        WHERE conversation_id=? AND user_id=? AND space_id=?
-         AND ${docId ? 'doc_id=?' : 'doc_id IS NULL'}
+         AND ${docId ? "doc_id=?" : "doc_id IS NULL"}
          AND expires_at>UTC_TIMESTAMP(6)
        ORDER BY created_at DESC LIMIT ?`,
-      [conversationId, context.user_id, context.space_id, ...(docId ? [docId] : []), limit],
+      [
+        conversationId,
+        context.user_id,
+        context.space_id,
+        ...(docId ? [docId] : []),
+        limit,
+      ],
     );
-    return rows.reverse().map((row) => ({ ...row, created_at: new Date(row.created_at) }));
+    return rows
+      .reverse()
+      .map((row) => ({ ...row, created_at: new Date(row.created_at) }));
   }
 
   async deleteDocument(docId: string): Promise<void> {
-    await this.database.query('DELETE FROM conversation_turns WHERE doc_id=?', [docId]);
+    await this.database.query("DELETE FROM conversation_turns WHERE doc_id=?", [
+      docId,
+    ]);
   }
 
   async addLegacyMessage(input: {
@@ -133,5 +145,5 @@ export class ConversationMemoryRepository {
 }
 
 function placeholders(values: unknown[]): string {
-  return values.map(() => '?').join(',');
+  return values.map(() => "?").join(",");
 }

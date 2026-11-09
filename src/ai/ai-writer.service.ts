@@ -321,25 +321,7 @@ export class AiWriterService {
       //摘要工具不检索，所以 citations 为空。
       const citations: Citation[] = [];
       //构造空引用 + 占位 Trace
-      const trace: RetrievalTrace = {
-        trace_id: randomUUID().replaceAll("-", ""),
-        mode: "hybrid",
-        rewritten_query: effective.query.trim(),
-        query_variants: [effective.query.trim()],
-        expansion_source: "original",
-        expansion_enabled: false,
-        dense_candidates: 0,
-        keyword_candidates: 0,
-        fused_candidates: 0,
-        reranked_candidates: 0,
-        deduped_candidates: 0,
-        returned_citations: 0,
-        retrieval_ms: 0,
-        rerank_ms: 0,
-        compression_ms: 0,
-        preprocessing_ms: toolCall.selection_ms,
-        total_ms: toolCall.selection_ms,
-      };
+      const trace = editorContextTrace(effective.query, toolCall.selection_ms);
       //把这次"伪检索"记录到可观测性系统
       await this.observability.recordSearch(
         trace,
@@ -388,7 +370,10 @@ export class AiWriterService {
         effective.current_context.cursor_before.slice(-800)].filter(Boolean).join('\n'),
     );
     // 使用 LLM/规则改写后的 query 作为主检索查询
-    const searchQuery = buildSearchQuery(effective);
+    const searchQuery = effective.query.trim();
+    const expansionSource = toolCall.source === "llm_function_call"
+      ? "tool_call"
+      : toolCall.source === "rule_fallback" ? "fallback" : "original";
     //生成一个结构化的编辑器上下文描述
     const contextText = buildContextText(effective, memoryText);
     let citations: Citation[];
@@ -398,25 +383,7 @@ export class AiWriterService {
     if (EDITOR_INTENTS.has(intent)) {
       // 编辑类工具只消费独立的 editor_context，不制造知识库引用。
       citations = [];
-      trace = {
-        trace_id: randomUUID().replaceAll("-", ""),
-        mode: "hybrid",
-        rewritten_query: effective.query.trim(),
-        query_variants: [effective.query.trim()],
-        expansion_source: "original",
-        expansion_enabled: false,
-        dense_candidates: 0, // 不走 dense 向量检索
-        keyword_candidates: 0, // 不走关键词检索
-        fused_candidates: 0, // 不走融合
-        reranked_candidates: 0,
-        deduped_candidates: 0,
-        returned_citations: citations.length,
-        retrieval_ms: 0,
-        rerank_ms: 0,
-        compression_ms: 0,
-        preprocessing_ms: toolCall.selection_ms,
-        total_ms: toolCall.selection_ms,
-      };
+      trace = editorContextTrace(effective.query, toolCall.selection_ms);
       //记录一条检索日志，标记 source: 'editor_context' ，方便后续分析      await this.observability.recordSearch(trace, context, request.query, citations, 'editor_context');
     } else if (effective.retrieval_domain === "current_document") {
       const result = await this.retrieval.searchCurrentDocumentWithTrace({
@@ -427,12 +394,7 @@ export class AiWriterService {
         topK: 5,
         contextText,
         queryVariants: toolCall.arguments.query_variants as string[],
-        expansionSource:
-          toolCall.source === "llm_function_call"
-            ? "tool_call"
-            : toolCall.source === "rule_fallback"
-              ? "fallback"
-              : "original",
+        expansionSource,
         preprocessingMs: toolCall.selection_ms,
         context,
       });
@@ -452,11 +414,7 @@ export class AiWriterService {
         } as SearchDto,
         context, // AccessContext：用户身份、space_id、team_ids
         toolCall.arguments.query_variants as string[], // query 扩展变体
-        toolCall.source === "llm_function_call"
-          ? "tool_call"
-          : toolCall.source === "rule_fallback"
-            ? "fallback"
-            : "original",
+        expansionSource,
         toolCall.selection_ms, // 工具选择耗时
       );
       citations = result.citations;
@@ -496,6 +454,29 @@ export class AiWriterService {
 
 function canInsert(intent: WriteIntent, hasEvidence: boolean): boolean {
   return !KNOWLEDGE_INTENTS.has(intent) || hasEvidence;
+}
+
+function editorContextTrace(query: string, selectionMs: number): RetrievalTrace {
+  const rewrittenQuery = query.trim();
+  return {
+    trace_id: randomUUID().replaceAll("-", ""),
+    mode: "hybrid",
+    rewritten_query: rewrittenQuery,
+    query_variants: [rewrittenQuery],
+    expansion_source: "original",
+    expansion_enabled: false,
+    dense_candidates: 0,
+    keyword_candidates: 0,
+    fused_candidates: 0,
+    reranked_candidates: 0,
+    deduped_candidates: 0,
+    returned_citations: 0,
+    retrieval_ms: 0,
+    rerank_ms: 0,
+    compression_ms: 0,
+    preprocessing_ms: selectionMs,
+    total_ms: selectionMs,
+  };
 }
 
 export function validateGroundedAnswer(
@@ -562,13 +543,6 @@ export function scopeForDomain(
     // 当前调用没有额外文档 id 白名单。
     document_ids: [],
   };
-}
-
-function buildSearchQuery(request: AiWriteDto): string {
-  // Query variants already contain the model's standalone rewrites. Raw
-  // editor text belongs in a separate context channel and must not be copied
-  // into every dense/sparse query.
-  return request.query.trim();
 }
 
 function buildContextText(request: AiWriteDto, memoryText: string): string {

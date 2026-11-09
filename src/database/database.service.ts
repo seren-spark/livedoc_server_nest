@@ -4,6 +4,8 @@ import { AppConfig } from '../config/app-config.js';
 import { CURRENT_SCHEMA_VERSION } from './migration-version.js';
 import { formatSchemaProblems, inspectSchemaContract } from './schema-contract.js';
 import { WORKSPACE_SCHEMA } from './workspace-schema.js';
+import { WIKI_SCHEMA } from './wiki-schema.js';
+import { AGENT_GRAPH_COLUMNS, AGENT_GRAPH_SCHEMA } from './agent-graph-schema.js';
 
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
@@ -82,7 +84,11 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
 
   async migrate(): Promise<void> {
+    await this.query(WIKI_SCHEMA);
     for (const sql of WORKSPACE_SCHEMA) await this.query(sql);
+    for (const [column, type] of Object.entries(AGENT_GRAPH_COLUMNS))
+      await this.ensureColumn('agent_runs', column, `ALTER TABLE agent_runs ADD COLUMN ${column} ${type}`);
+    for (const sql of AGENT_GRAPH_SCHEMA) await this.query(sql);
     await this.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
       version VARCHAR(128) PRIMARY KEY, applied_at DATETIME(6) NOT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);

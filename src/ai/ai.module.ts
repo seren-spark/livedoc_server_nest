@@ -1,3 +1,8 @@
+import { AgentRuntimeService } from './agent-runtime.service.js';
+import { AgentSupervisorService } from './agent-supervisor.service.js';
+import { WikiModule } from '../wiki/wiki.module.js';
+import { WikiController } from '../wiki/wiki.controller.js';
+import { DocumentAgentToolsService } from './document-agent-tools.service.js';
 import { Module } from '@nestjs/common';
 import { ObservabilityModule } from '../observability/observability.module.js';
 import { RetrievalModule } from '../retrieval/retrieval.module.js';
@@ -15,12 +20,18 @@ import { DocumentAgentController } from './document-agent.controller.js';
 import { AgentAuditService } from './agent-audit.service.js';
 import { AgentMcpService } from './agent-mcp.service.js';
 import { AgentSettingsService } from './agent-settings.service.js';
+import { AuthModule } from '../auth/auth.module.js';
+import { AgentRunRepository } from './graph/agent-run.repository.js';
+import { AgentGraphWorkflow } from './graph/agent-graph.workflow.js';
+import { AgentGraphService } from './graph/agent-graph.service.js';
+import { AgentGraphController } from './graph/agent-graph.controller.js';
 
 @Module({
-  imports: [LlmModule, RetrievalModule, ObservabilityModule, DocumentsModule, MemoryModule,DocumentImportsModule,WorkspaceModule],
-  controllers: [AiController,DocumentAgentController],
+  imports: [AuthModule,WikiModule,LlmModule, RetrievalModule, ObservabilityModule, DocumentsModule, MemoryModule,DocumentImportsModule,WorkspaceModule],
+  controllers: [AgentGraphController,WikiController,AiController,DocumentAgentController],
   providers: [
-    DocumentAgentService,AgentAuditService,AgentMcpService,AgentSettingsService,
+    AgentRunRepository, AgentGraphWorkflow, AgentGraphService,
+    AgentSupervisorService,AgentRuntimeService,DocumentAgentToolsService,DocumentAgentService,AgentAuditService,AgentMcpService,AgentSettingsService,
     AgentToolsService,
     DocumentSummaryService,
     AiWriterService,

@@ -8,6 +8,7 @@ import {
 import { AppModule } from './app.module.js';
 import { AppConfig } from './config/app-config.js';
 import multipart from '@fastify/multipart';
+import { AgentGraphService } from './ai/graph/agent-graph.service.js';
 
 export async function bootstrap(): Promise<NestFastifyApplication> {
   const app = await NestFactory.create<NestFastifyApplication>(
@@ -16,7 +17,7 @@ export async function bootstrap(): Promise<NestFastifyApplication> {
   );
   const config = app.get(AppConfig);
   app.getHttpAdapter().getInstance().addHook('onRoute',(options: any) => {
-    if(options.url==='/ai/agent' && options.method==='POST') options.bodyLimit=8*1024*1024;
+    if((options.url==='/ai/agent' || options.url==='/ai/agent/runs' || options.url==='/ai/agent/:id/restore') && options.method==='POST') options.bodyLimit=8*1024*1024;
   });
   await app.register(multipart, {
     limits: { fileSize: config.importMaxUploadMb * 1024 * 1024, files: 1 },
@@ -40,6 +41,7 @@ export async function bootstrap(): Promise<NestFastifyApplication> {
     }),
   );
   await app.init();
+  app.get(AgentGraphService).start();
   return app;
 }
 
@@ -48,6 +50,7 @@ if (
   process.env.LIVEDOC_SKIP_AUTO_START !== 'true'
 ) {
   const app = await bootstrap();
+  app.enableShutdownHooks(['SIGINT', 'SIGTERM']);
   const config = app.get(AppConfig);
   await app.listen({ port: config.port, host: config.host });
 }

@@ -411,12 +411,8 @@ function buildChunk(
     content,
     ...(retrievalContent !== content ? { retrieval_content: retrievalContent } : {}),
     token_count: blocks[0]!.countTokens(retrievalContent),
-    start_offset:
-      Math.min(...contentBlocks.map((block) => block.startOffset)) +
-      leadingWhitespace,
-    end_offset:
-      Math.max(...contentBlocks.map((block) => block.endOffset)) -
-      trailingWhitespace,
+    start_offset: start + leadingWhitespace,
+    end_offset: end - trailingWhitespace,
     source_anchor: `chunk-${chunkId}`,
   };
 }
@@ -643,6 +639,7 @@ function hardSplitBlock(
   budget: number,
 ): Block[] {
   const parts: Block[] = [];
+  const spans = protectedRanges(block.node, block.startOffset);
   let cursor = start;
   while (cursor < end) {
     let low = cursor + 1;
@@ -657,7 +654,6 @@ function hardSplitBlock(
         high = middle - 1;
       }
     }
-    const spans = protectedRanges(block.node, block.startOffset);
     const atom = spans.find(([left, right]) => left < best && right > best);
     if (atom) best = atom[0] > cursor ? atom[0] : atom[1];
     if (best < end && /[\uDC00-\uDFFF]/u.test(block.text[best]!)) best--;

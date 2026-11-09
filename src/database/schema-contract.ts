@@ -1,11 +1,17 @@
 import { CURRENT_SCHEMA_VERSION } from './migration-version.js';
 
 export const REQUIRED_SCHEMA_COLUMNS = {
+  wiki_pages: ['wiki_id','space_id','owner_id','origin_run_id','revision','status','payload','created_at','updated_at'],
   agent_user_settings: ['space_id','user_id','revision','payload','updated_at'],
   note_category_trees: ['space_id','owner_id','tree_revision'],
   note_categories: ['category_id','space_id','owner_id','parent_id','name','sort_order','deleted_at','delete_batch_id','delete_reason'],
   note_templates: ['template_id','space_id','owner_id','name','description','markdown','instructions','revision'],
-  agent_runs: ['run_id','request_id','user_id','space_id','conversation_id','mode','status','payload','created_at','completed_at'],
+  agent_runs: ['run_id','request_id','user_id','space_id','conversation_id','mode','status','payload','created_at','completed_at','graph_version','revision','stage','execution_generation','lease_expires_at','pause_requested','last_seq','active_ms','budget','control','resumable_until','updated_at'],
+  agent_graph_checkpoints: ['thread_id','ns_key','checkpoint_ns','checkpoint_id','parent_id','checkpoint_type','checkpoint','metadata_type','metadata'],
+  agent_graph_writes: ['thread_id','ns_key','checkpoint_id','task_id','write_idx','task_path','channel','value_type','value'],
+  agent_run_artifacts: ['run_id','artifact_key','payload','created_at'],
+  agent_run_events: ['run_id','seq','event','payload','created_at'],
+  agent_model_reservations: ['reservation_id','run_id','generation','estimated','settled','prompt_tokens','completion_tokens'],
   agent_tool_calls: ['call_id','run_id','step_id','tool_name','source','status','payload','started_at','completed_at'],
   article_reactions: ['article_id', 'user_id', 'kind', 'created_at'],
   article_comments: ['comment_id', 'article_id', 'user_id', 'content', 'created_at', 'parent_comment_id', 'deleted_at'],
@@ -78,6 +84,7 @@ export const REQUIRED_SCHEMA_COLUMNS = {
 } as const;
 
 export const REQUIRED_SCHEMA_INDEXES = {
+  wiki_pages: ['PRIMARY','ux_wiki_origin','ix_wiki_owner'],
   note_category_trees: ['PRIMARY'],
   note_categories: ['PRIMARY','ix_categories_owner'],
   note_templates: ['PRIMARY','ix_templates_owner'],

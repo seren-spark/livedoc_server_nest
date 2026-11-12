@@ -6,10 +6,12 @@ import { AgentAuditService, type AgentRunRecord } from "../src/ai/agent-audit.se
 import { AgentExecutionError, agentFailure, reserveModelBudget, reserveWorkerModelBudget, type AgentSpan } from "../src/ai/agent-execution.js";
 import { emptyUsage, type WorkerEnvironment } from "../src/ai/agent-runtime.types.js";
 import { request } from "./fixtures/agent-request.js";
+import { canFallbackModel } from '../src/ai/model-routing.js';
 
 function harness() {
-  const llm = { agentTurn: jest.fn<any>() };
   const config = new AppConfig();
+  const llm = { agentTurn: jest.fn<any>(), canFallback: canFallbackModel,
+    agentAttempt: () => ({ model: config.llmModel, provider: config.llmProvider, contextWindow: config.llmContextWindow }) };
   const runtime = new AgentRuntimeService(config, llm as any, {} as any, {} as any, {} as any);
   const abort = new AbortController();
   const traces: AgentSpan[] = [];

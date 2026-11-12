@@ -273,6 +273,10 @@ export class SearchDto {
   @IsBoolean()
   rerank?: boolean = true;
 
+  @IsOptional()
+  @IsBoolean()
+  evidence_selection?: boolean = true;
+
   @IsString()
   query!: string;
 

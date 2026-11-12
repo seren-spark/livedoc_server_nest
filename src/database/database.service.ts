@@ -1,11 +1,14 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { DataSource, type EntityManager } from 'typeorm';
 import { AppConfig } from '../config/app-config.js';
+import { CONVERSATION_CONSTRAINTS_SCHEMA, CONVERSATION_TURN_SCOPE_BACKFILL } from './conversation-constraints-schema.js';
 import { CURRENT_SCHEMA_VERSION } from './migration-version.js';
 import { formatSchemaProblems, inspectSchemaContract } from './schema-contract.js';
 import { WORKSPACE_SCHEMA } from './workspace-schema.js';
 import { WIKI_SCHEMA } from './wiki-schema.js';
 import { AGENT_GRAPH_COLUMNS, AGENT_GRAPH_SCHEMA } from './agent-graph-schema.js';
+import { WRITING_SKILLS_SCHEMA } from '../ai/writing-skills.schema.js';
+import { WRITING_PREFERENCES_SCHEMA } from '../ai/writing-preferences.schema.js';
 
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
@@ -89,6 +92,9 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     for (const [column, type] of Object.entries(AGENT_GRAPH_COLUMNS))
       await this.ensureColumn('agent_runs', column, `ALTER TABLE agent_runs ADD COLUMN ${column} ${type}`);
     for (const sql of AGENT_GRAPH_SCHEMA) await this.query(sql);
+    for (const sql of CONVERSATION_CONSTRAINTS_SCHEMA) await this.query(sql);
+    for (const sql of WRITING_SKILLS_SCHEMA) await this.query(sql);
+    for (const sql of WRITING_PREFERENCES_SCHEMA) await this.query(sql);
     await this.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
       version VARCHAR(128) PRIMARY KEY, applied_at DATETIME(6) NOT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
@@ -460,6 +466,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       'CREATE INDEX ix_feedback_scope ON rag_feedback_events (space_id, created_at)',
     );
     if (!alreadyApplied) {
+      await this.query(CONVERSATION_TURN_SCOPE_BACKFILL);
       await this.query(
         'INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)',
         [CURRENT_SCHEMA_VERSION, new Date()],

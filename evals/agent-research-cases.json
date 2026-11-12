@@ -1,0 +1,9 @@
+[
+  { "id": "research-complete", "feature": "research", "group": "research", "scenario": "complete", "query": "[evaluation:research-complete] 根据所选资料写一篇 Orion 项目介绍，分别说明负责人和回滚窗口，保留引用。", "required": ["陈青", "48"], "real": true, "success_criteria": ["必答问题逐项映射到证据和文章位置", "事实核验与要求覆盖均通过"] },
+  { "id": "research-missing", "feature": "research", "group": "research", "scenario": "missing", "query": "[evaluation:research-missing] 根据资料介绍 Orion 的负责人、回滚窗口和实际案例，资料没有案例时明确说明。", "required": ["陈青", "48", "未记录"], "real": true, "success_criteria": ["缺少案例时不编造", "正确标记部分满足并交付有依据草稿"] },
+  { "id": "research-repair", "feature": "research", "group": "research", "scenario": "repair", "query": "[evaluation:research-repair] 编写 Orion 负责人和回滚窗口的完整说明，两个问题都要实质回答。", "required": ["陈青", "48"], "real": false, "success_criteria": ["已有证据漏写时修订而非额外检索", "修订后再次检查覆盖与事实"] },
+  { "id": "research-supplement", "feature": "research", "group": "research", "scenario": "supplement", "query": "[evaluation:research-supplement] 编写 Orion 负责人和回滚窗口说明；发现重大缺项时定向补查再修订。", "required": ["陈青", "48"], "real": false, "success_criteria": ["覆盖缺项进入同一恢复图", "补查不扩大授权，最多一轮纠错"] },
+  { "id": "research-chapters", "feature": "research", "group": "research", "scenario": "chapters", "query": "[evaluation:research-chapters] 围绕 Orion 项目背景、负责人、回滚规则和资料边界分四章写文章，统一术语与引用。", "required": ["陈青", "48"], "real": true, "success_criteria": ["章节产物落库并可复用", "全文整合后重新核验"] },
+  { "id": "research-restart", "feature": "research", "group": "research", "scenario": "restart", "query": "[evaluation:research-restart] 根据资料写 Orion 负责人和回滚窗口说明，保留引用。", "required": ["陈青", "48"], "real": false, "success_criteria": ["跨进程恢复保留策略和简报", "不重做已成功步骤"] },
+  { "id": "research-review-error", "feature": "research", "group": "research", "scenario": "error_interrupted", "query": "[evaluation:research-review-error] 根据资料写 Orion 负责人和回滚窗口说明。", "required": ["陈青", "48"], "real": false, "success_criteria": ["审查故障保留恢复点，不交付未核验候选", "恢复后不重做成功研究步骤"] }
+]

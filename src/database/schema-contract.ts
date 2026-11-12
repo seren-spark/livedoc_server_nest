@@ -1,6 +1,11 @@
 import { CURRENT_SCHEMA_VERSION } from './migration-version.js';
 
 export const REQUIRED_SCHEMA_COLUMNS = {
+  writing_skills: ['skill_id','owner_id','space_id','revision','definition','updated_at'],
+  writing_preference_states: ['space_id','user_id','revision','items','updated_at'],
+  writing_preference_inputs: ['space_id','user_id','input_key','content_hash','result','created_at'],
+  conversation_constraint_states: ['scope_key','user_id','space_id','conversation_id','document_key','revision','items','expires_at'],
+  conversation_constraint_inputs: ['scope_key','input_key','content_hash','snapshot','expires_at'],
   wiki_pages: ['wiki_id','space_id','owner_id','origin_run_id','revision','status','payload','created_at','updated_at'],
   agent_user_settings: ['space_id','user_id','revision','payload','updated_at'],
   note_category_trees: ['space_id','owner_id','tree_revision'],
@@ -84,6 +89,8 @@ export const REQUIRED_SCHEMA_COLUMNS = {
 } as const;
 
 export const REQUIRED_SCHEMA_INDEXES = {
+  conversation_constraint_states: ['PRIMARY','ix_constraint_document','ix_constraint_expiry'],
+  conversation_constraint_inputs: ['PRIMARY','ix_constraint_input_expiry'],
   wiki_pages: ['PRIMARY','ux_wiki_origin','ix_wiki_owner'],
   note_category_trees: ['PRIMARY'],
   note_categories: ['PRIMARY','ix_categories_owner'],

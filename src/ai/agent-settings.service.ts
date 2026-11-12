@@ -37,7 +37,7 @@ export class AgentSettingsService {
   private readonly lastValidation = new Map<string, number>();
   constructor(private readonly db: DatabaseService, private readonly config: AppConfig, private readonly llm: LlmService) {}
   private fingerprint() {
-    return createHash('sha256').update(JSON.stringify([this.config.llmBaseUrl, this.config.llmModel, this.config.llmApiKey, this.config.llmToolCallExtraBody])).digest('hex');
+    return this.llm.configurationFingerprint();
   }
   private encryptionKey() {
     const key = Buffer.from(this.config.agentSettingsEncryptionKey, 'base64');
@@ -77,15 +77,15 @@ export class AgentSettingsService {
   async get(c: AccessContext) {
     const s = await this.read(c), t = s.payload.thinking, w = s.payload.web;
     const thinkingValid = Boolean(t?.checked_at && t.fingerprint === this.fingerprint());
-    return { revision: s.revision, model: this.config.llmModel,
+    return { revision: s.revision, model: this.llm.mainModel,
       web: { configured: Boolean(w), enabled: w ? w.enabled : this.config.mcpEnabled || this.llm.webSearchConfigured, verified: Boolean(w?.checked_at && w.secret), has_key: Boolean(w?.secret), checked_at: w?.checked_at },
-      thinking: { configured: Boolean(t), enabled: t ? t.enabled : this.config.thinkingSupported, verified: thinkingValid,
+      thinking: { configured: Boolean(t), enabled: t ? t.enabled : this.llm.thinkingSupported, verified: thinkingValid,
         preset: t?.preset ?? 'qwen', checked_at: t?.checked_at, needs_revalidation: Boolean(t?.checked_at && !thinkingValid) } };
   }
   async runtime(c: AccessContext) {
     const s = await this.read(c), w = s.payload.web, t = s.payload.thinking;
     const thinking = t?.enabled && t.checked_at && t.fingerprint === this.fingerprint() && t.preset ? THINKING_PRESETS[t.preset] : undefined;
-    return { thinking_supported: t ? Boolean(thinking) : this.config.thinkingSupported,
+    return { thinking_supported: t ? Boolean(thinking) : this.llm.thinkingSupported,
       thinking, web_key: w?.enabled && w.checked_at && w.secret ? this.decrypt(w.secret, c) : undefined,
       deployment_web: w ? w.enabled : true };
   }
@@ -123,7 +123,7 @@ export class AgentSettingsService {
       if (message.includes('THINKING_UNCONFIRMED')) throw new BadRequestException('模型未返回可验证的思考信号，暂不能确认支持该配置；请尝试其他适配方式');
       if (message.includes('THINKING_OFF_UNCONFIRMED')) throw new BadRequestException('模型未按配置关闭思考，当前适配方式无法可靠控制开关');
       if (message.includes('THINKING_TOOL_UNSUPPORTED')) throw new BadRequestException('该配置未通过 Agent 工具调用验证，请尝试其他适配方式');
-      const status = message.match(/LLM request failed: (\d+)/)?.[1];
+      const status = message.match(/(?:LLM request failed: |模型服务请求失败（)(\d+)/)?.[1];
       throw new BadRequestException(status ? `模型服务拒绝该配置（${status}），请检查当前模型是否支持此适配方式` : '验证未完成：连接超时或服务不可用，请稍后重试；原有配置未更改');
     } finally { this.validating.delete(id); }
   }
@@ -139,10 +139,14 @@ export class AgentSettingsService {
     if (!Array.isArray(data.results) || (endpoint === 'search' && data.results.length === 0)) throw new BadRequestException('搜索服务未返回有效结果，验证未通过');
     return data;
   }
-  async webCall(name: string, args: Record<string, any>, key: string, signal: AbortSignal) {
+  async webCall(name: string, args: Record<string, any>, key: string, signal: AbortSignal, fullContent = false) {
     if (name === 'personal_tavily_extract') await validatePublicUrl(args.url);
     const data = await this.tavily(name === 'personal_tavily_search' ? 'search' : 'extract', key,
-      name === 'personal_tavily_search' ? { query: args.query, max_results: 5, search_depth: 'basic', include_answer: false } : { urls: [args.url], extract_depth: 'basic' }, signal);
-    return data.results.slice(0, 5).map((r: any) => ({ title: String(r.title ?? r.url).slice(0, 300), url: String(r.url), content: String(r.content ?? r.raw_content ?? '').slice(0, 5000) }));
+      name === 'personal_tavily_search' ? { query: args.query, max_results: 5, search_depth: 'basic', include_answer: false, ...(fullContent ? { include_raw_content: true } : {}) } : { urls: [args.url], extract_depth: 'basic' }, signal);
+    return data.results.slice(0, 5).map((r: any) => ({ title: String(r.title ?? r.url).slice(0, 300), url: String(r.url),
+      content: String(r.content ?? r.raw_content ?? '').slice(0, 5000),
+      ...(fullContent && String(r.raw_content ?? (name === 'personal_tavily_extract' ? r.content : '') ?? '').trim()
+        ? { raw_content: String(r.raw_content ?? r.content) } : {}),
+    }));
   }
 }

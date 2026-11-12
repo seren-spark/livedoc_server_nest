@@ -1,3 +1,4 @@
+import { ConversationConstraintsService } from './conversation-constraints.service.js';
 import { Injectable } from "@nestjs/common";
 import { randomUUID, createHash } from "node:crypto";
 import { getEncoding, type Tiktoken } from "js-tiktoken";
@@ -23,6 +24,7 @@ export class ConversationMemoryService {
   constructor(
     private readonly config: AppConfig,
     private readonly database: DatabaseService,
+    private readonly constraints?: ConversationConstraintsService,
   ) {
     this.repository = new ConversationMemoryRepository(database);
     this.tokenizer = getEncoding(
@@ -79,6 +81,7 @@ export class ConversationMemoryService {
     conversationId: string | undefined,
     context: AccessContext,
     docId?: string,
+    tokenBudget = this.config.shortMemoryTokenBudget,
   ): Promise<string> {
     if (!conversationId) return "";
     let turns: ConversationTurn[] = [];
@@ -91,11 +94,12 @@ export class ConversationMemoryService {
       );
     } else
       turns = this.turns.get(memoryKey(conversationId, context, docId)) ?? [];
-    if (!turns.length) return this.legacyRecentText(conversationId, context);
-    return this.fitCompleteTurns(turns);
+    if (!turns.length) return docId?.startsWith('agent:') ? '' : this.legacyRecentText(conversationId, context, tokenBudget);
+    return this.fitCompleteTurns(turns, tokenBudget);
   }
 
   async deleteDocument(docId: string): Promise<void> {
+    await this.constraints?.deleteDocument(docId);
     if (this.database.memoryEnabled) {
       await this.repository.deleteDocument(docId);
       return;
@@ -136,13 +140,13 @@ export class ConversationMemoryService {
     );
   }
 
-  private fitCompleteTurns(turns: ConversationTurn[]): string {
+  private fitCompleteTurns(turns: ConversationTurn[], tokenBudget: number): string {
     const selected: string[] = [];
     let used = 0;
     for (const turn of [...turns].reverse()) {
       const text = `user: ${turn.user_content}\nassistant: ${turn.assistant_content}`;
       const count = this.tokenizer.encode(text).length;
-      if (used + count > this.config.shortMemoryTokenBudget) continue;
+      if (used + count > tokenBudget) continue;
       selected.unshift(text);
       used += count;
     }
@@ -152,6 +156,7 @@ export class ConversationMemoryService {
   private async legacyRecentText(
     conversationId: string,
     context: AccessContext,
+    tokenBudget: number,
   ): Promise<string> {
     let items: LegacyMessage[];
     if (this.database.memoryEnabled) {
@@ -163,7 +168,16 @@ export class ConversationMemoryService {
     } else
       items =
         this.legacyMessages.get(legacyMemoryKey(conversationId, context)) ?? [];
-    return items.map((item) => `${item.role}: ${item.content}`).join("\n");
+    const selected: string[] = [];
+    let used = 0;
+    for (const item of [...items].reverse()) {
+      const text = `${item.role}: ${item.content}`;
+      const tokens = this.tokenizer.encode(text).length;
+      if (used + tokens > tokenBudget) continue;
+      selected.unshift(text);
+      used += tokens;
+    }
+    return selected.join('\n');
   }
 }
 

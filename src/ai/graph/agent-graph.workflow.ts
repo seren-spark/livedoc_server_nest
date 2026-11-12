@@ -18,7 +18,7 @@ import {
 } from "../agent-supervisor.service.js";
 import { AgentSettingsService } from "../agent-settings.service.js";
 import { WikiService } from "../../wiki/wiki.service.js";
-import { parseModelJson, validatePlan } from "../document-agent.validation.js";
+import { parseModelJson, selectAgentCitations, validatePlan } from "../document-agent.validation.js";
 import { writingGuidance } from "../document-agent-tools.service.js";
 import type { DocumentAgentDto } from "../document-agent.dto.js";
 import type { ExecutionPlan, AgentResult } from "../document-agent.types.js";
@@ -39,9 +39,16 @@ import {
   startAgentSpan,
 } from "../agent-execution.js";
 import { AuthService } from "../../auth/auth.service.js";
+import { EvidenceVerificationService, type VerificationReport } from '../evidence-verification.service.js';
+import { activeStepOutputs, dependencyClosure, stepArtifactKey, stepFingerprint, type StepOutputs } from '../step-versions.js';
+import { ResearchWritingService } from '../research-writing.service.js';
+import { contentHash, type ResearchBrief, type ResearchReview } from '../research-writing.js';
+import type { WritingSkillSnapshot } from '../writing-skills.types.js';
 
 const GraphState = Annotation.Root({
   base: Annotation<string>(),
+  constraintInput: Annotation<{ id: string; text: string; kind?: 'approval' | 'user' } | null>(),
+  constraintNext: Annotation<string>(),
   plan: Annotation<ExecutionPlan | null>(),
   needsPlan: Annotation<boolean>(),
   needsKnowledge: Annotation<boolean>(),
@@ -52,7 +59,7 @@ const GraphState = Annotation.Root({
   steps: Annotation<ExecutionPlan["steps"]>(),
   trace: Annotation<SupervisorTrace>(),
   decision: Annotation<SupervisorDecision | null>(),
-  outputs: Annotation<Record<string, string>>({
+  outputs: Annotation<StepOutputs>({
     reducer: (a, b) => ({ ...a, ...b }),
     default: () => ({}),
   }),
@@ -69,8 +76,43 @@ const GraphState = Annotation.Root({
   primary: Annotation<string>(),
   reviewed: Annotation<string>(),
   finalStatus: Annotation<string>(),
+  invalidated: Annotation<Record<string, boolean>>({ reducer: (a, b) => ({ ...a, ...b }), default: () => ({}) }),
+  candidateVersion: Annotation<number>({ default: () => 0, reducer: (_a, b) => b }),
+  correctionCount: Annotation<number>({ default: () => 0, reducer: (_a, b) => b }),
+  verification: Annotation<string>(),
+  recoveryInstruction: Annotation<string>(),
+  researchBrief: Annotation<string>(),
+  researchReview: Annotation<string>(),
 });
 type State = typeof GraphState.State;
+
+function candidateEvidence(output: WorkerOutput) {
+  const adopted = selectAgentCitations(output.result, new Map(output.citations.map((citation) => [citation.id, citation])));
+  const ids = new Set(adopted.map((citation) => citation.id));
+  if (output.result.kind === 'edits' || !ids.size)
+    output.citations.filter((citation) => citation.kind === 'current_document').forEach((citation) => ids.add(citation.id));
+  return { citations: output.citations.filter((citation) => ids.has(citation.id)),
+    evidence: output.evidence.filter(([id]) => ids.has(id)) };
+}
+
+function writingConstraints(context: Record<string, any>) {
+  return { conversation_constraints: context.conversation_constraints, user_preferences: context.user_preferences,
+    template_instructions: context.template?.instructions, skill_acceptance: context.skill_snapshot?.skill.acceptance };
+}
+
+/** Checkpoints written before constraint state existed still have the original continuation. */
+export function constraintContinuation(state: {
+  constraintNext?: string;
+  questions?: Record<string, unknown>;
+  needsApproval?: boolean;
+  approved?: boolean;
+  plan?: ExecutionPlan | null;
+}): string {
+  if (state.constraintNext) return state.constraintNext;
+  if (Object.values(state.questions ?? {}).some(Boolean)) return 'clarify';
+  if (state.needsApproval && !state.approved) return 'make_plan';
+  return state.plan ? 'decide_next' : 'compose';
+}
 
 export function needsPlanApproval(request: DocumentAgentDto) {
   return (
@@ -85,6 +127,8 @@ export function needsPlanApproval(request: DocumentAgentDto) {
 
 @Injectable()
 export class AgentGraphWorkflow {
+  private readonly verification = new EvidenceVerificationService();
+  private readonly research = new ResearchWritingService();
   constructor(
     private readonly repository: AgentRunRepository,
     private readonly document: DocumentAgentService,
@@ -101,6 +145,9 @@ export class AgentGraphWorkflow {
       generation = run.execution_generation,
       id = run.run_id;
     const request = await repo.artifact<DocumentAgentDto>(id, "input");
+    const v2 = run.graph_version === 'v2';
+    const research = v2 && run.payload.policy?.research_writing === true;
+    const researchSkill = research ? await repo.artifact<WritingSkillSnapshot>(id, 'selected_skill') : undefined;
     const personal = await this.settings.runtime(context);
     const budget = run.budget;
     let events: Promise<void> = Promise.resolve();
@@ -131,6 +178,7 @@ export class AgentGraphWorkflow {
       parent_span_id: (state as any).__span_id,
       ...(primary ? { task_id: "primary" } : {}),
       researchManaged: Boolean(state.plan),
+      features: v2 ? run.payload.policy : undefined,
       emit,
       ledger: {
         increment: async (counter, limit) => {
@@ -169,9 +217,10 @@ export class AgentGraphWorkflow {
     ): Promise<Record<string, WorkerOutput>> =>
       Object.fromEntries(
         await Promise.all(
-          Object.entries(state.outputs).map(async ([key, ref]) => [
+          Object.entries(v2 ? activeStepOutputs(state.steps, state.outputs,
+            Object.keys(state.invalidated ?? {}).filter((key) => state.invalidated[key]), state.base) : state.outputs).map(async ([key, ref]) => [
             key,
-            await output(ref),
+            await output(typeof ref === 'string' ? ref : ref.artifact_key),
           ]),
         ),
       );
@@ -215,6 +264,7 @@ export class AgentGraphWorkflow {
       const b = await base(state),
         dependencies = await completed(state);
       const env = environment(state, !step);
+      if (research && state.researchBrief) env.research_brief = await repo.artifact<ResearchBrief>(id, state.researchBrief);
       env.knowledge_snapshot = b.knowledge_snapshot;
       const value = await this.runtime.runWorker({
         task_id: step?.id ?? "primary",
@@ -233,7 +283,9 @@ export class AgentGraphWorkflow {
           ...b.context,
           query: env.request.query,
           clarification_answers: state.answers,
+          ...(v2 && state.recoveryInstruction ? { recovery_instruction: state.recoveryInstruction } : {}),
           ...(state.plan ? { execution_plan: state.plan } : {}),
+          ...(env.research_brief ? { research_brief: env.research_brief } : {}),
         },
         step,
         dependencies: step
@@ -257,6 +309,11 @@ export class AgentGraphWorkflow {
           const contextData = await this.document.buildContext(
             request,
             context,
+            environment({ answers: {}, approved: false } as State),
+            `initial:${request.request_id}`,
+            request.query,
+            { skill: v2 && run.payload.policy.skills && request.skill_id
+              ? await repo.artifact(id, 'selected_skill') : undefined },
           );
           const knowledge_snapshot = request.knowledge_scope
             ? await this.wiki
@@ -269,6 +326,8 @@ export class AgentGraphWorkflow {
           });
           const approval = needsPlanApproval(request);
           let route = ruleRoute(request);
+          const skillCatalog = v2 && run.payload.policy.skills && !request.skill_id
+            ? await this.document.skillCatalog(context) : [];
           const explicitKnowledge =
             /知识库|资料库|文献|参考资料|选中资料/u.test(request.query);
           const localEdit =
@@ -288,13 +347,14 @@ export class AgentGraphWorkflow {
                   {
                     role: "system",
                     content:
-                      "判断任务为 react 单步或 plan_execute 多步骤，并判断是否需要检索用户选定的知识库。局部润色、问候及无关问题不需要检索；相关事实查询需要。只返回 JSON {strategy,reason,needs_knowledge:boolean}。",
+                      "判断任务为 react 单步或 plan_execute 多步骤，并判断是否需要检索用户选定的知识库。局部润色、问候及无关问题不需要检索；相关事实查询需要。只返回 JSON {strategy,reason,needs_knowledge:boolean,skill_suggestions?:string[]}。skill_suggestions仅可从skill_catalog选择适用ID，最多3个，用于向用户建议。",
                   },
                   {
                     role: "user",
                     content: JSON.stringify({
                       query: request.query,
                       reference_count: request.references.length,
+                      ...(skillCatalog.length ? { skill_catalog: skillCatalog } : {}),
                       knowledge_scope_selected: Boolean(
                         request.knowledge_scope,
                       ),
@@ -305,6 +365,10 @@ export class AgentGraphWorkflow {
                 { role: "classifier", json: true, maxTokens: 300 },
               );
               const value = parseModelJson(response.content ?? "");
+              if (Array.isArray(value.skill_suggestions)) {
+                const suggested = skillCatalog.filter((skill) => value.skill_suggestions.includes(skill.skill_id)).slice(0, 3);
+                if (suggested.length) emit('skill_suggestions', { skills: suggested });
+              }
               if (!["react", "plan_execute"].includes(value.strategy))
                 throw new Error("无效路由");
               route ??= {
@@ -336,7 +400,7 @@ export class AgentGraphWorkflow {
             planVersion: 0,
             planFeedback: "",
             needsPlan:
-              approval || route.strategy === "plan_execute" || needsKnowledge,
+              approval || route.strategy === "plan_execute" || needsKnowledge || Boolean(contextData.skill_snapshot),
             plan: request.confirmed_plan ?? null,
             steps: request.confirmed_plan?.steps ?? [],
             trace: this.supervisor.createTrace(),
@@ -347,7 +411,10 @@ export class AgentGraphWorkflow {
         "make_plan",
         wrap("make_plan", async (state: State) => {
           let plan: ExecutionPlan;
-          if (
+          const selectedSkill = (await base(state)).context.skill_snapshot;
+          if (selectedSkill && !state.planFeedback) {
+            plan = this.document.skillPlan(selectedSkill, environment(state).request.query);
+          } else if (
             request.mode === "ask" &&
             state.needsKnowledge &&
             !state.needsApproval
@@ -372,7 +439,7 @@ export class AgentGraphWorkflow {
                 {
                   role: "system",
                   content:
-                    `为任务生成最多${this.supervisor.maxPlanSteps()}步的无环计划。仅返回 JSON {goal,outline:[],constraints:[],steps:[{id,description,depends_on:[],capability:"read"|"search"|"compose"}]}。不扩大知识库或联网范围。` +
+                    `为任务生成最多${this.supervisor.maxPlanSteps()}步的无环计划。仅返回 JSON {goal,outline:[],constraints:[],steps:[{id,description,depends_on:[],capability:"read"|"search"|"compose"}]}。步骤 id 和 depends_on 元素必须是字符串，例如 "read" 和 ["read"]。等待确认由系统处理，不列为执行步骤。简单选区改写只需读取及改写两步。不扩大知识库或联网范围。` +
                     writingGuidance,
                 },
                 {
@@ -406,12 +473,17 @@ export class AgentGraphWorkflow {
           plan_version: state.planVersion,
         }) as RunCommand;
         if (command.action === "revise_plan")
-          return { approved: false, planFeedback: command.text ?? "" };
+          return { approved: false, planFeedback: command.text ?? "",
+            constraintInput: { id: `resume:${command.request_id}`, text: command.text ?? "" },
+            constraintNext: 'make_plan' };
         if (command.action !== "approve_plan")
           throw new BadRequestException("需要确认计划");
         const plan = command.plan ? validatePlan(command.plan) : state.plan!;
         this.supervisor.assertPlanFits(plan);
-        return { plan, steps: plan.steps, approved: true };
+        return { plan, steps: plan.steps, approved: true,
+          constraintInput: { id: `resume:${command.request_id}`, kind: 'approval',
+            text: JSON.stringify({ user_approved_goal: plan.goal, user_approved_constraints: plan.constraints }) },
+          constraintNext: 'decide_next' };
       })
       .addNode(
         "decide_next",
@@ -476,7 +548,8 @@ export class AgentGraphWorkflow {
         wrap("execute_step", async (state: State & { stepId: string }) => {
           const step = state.steps.find((s) => s.id === state.stepId)!;
           const remaining = state.steps.filter(
-            (s) => !state.outputs[s.id],
+            (s) => !Object.hasOwn(v2 ? activeStepOutputs(state.steps, state.outputs,
+              Object.keys(state.invalidated ?? {}).filter((key) => state.invalidated[key]), state.base) : state.outputs, s.id),
           ).length;
           const size =
             state.decision?.action === "dispatch"
@@ -489,7 +562,7 @@ export class AgentGraphWorkflow {
             repairReserve -
             3 * (remaining - size);
           const turns = Math.min(
-            4,
+            research && step.capability === 'search' ? 8 : 4,
             Math.floor((limit - budget.execution_turns) / size),
           );
           if (turns < 1) throw new BadRequestException("剩余执行预算不足");
@@ -523,14 +596,20 @@ export class AgentGraphWorkflow {
             return { questions: { [step.id]: result.result } };
           if (result.result.kind !== "answer")
             throw new BadRequestException("步骤交付类型无效");
-          const key = `step:${step.id}`;
+          const previousOutput = Object.hasOwn(state.outputs, step.id) ? state.outputs[step.id] : undefined;
+          const version = typeof previousOutput === 'object' ? previousOutput.version + 1 : 1;
+          const key = v2 ? stepArtifactKey(step.id, version) : `step:${step.id}`;
           await repo.saveArtifact(id, generation, key, result);
           emit("step", {
             id: step.id,
             description: step.description,
             status: "done",
           });
-          return { outputs: { [step.id]: key } };
+          return { outputs: { [step.id]: v2 ? {
+            artifact_key: key, version,
+            input_fingerprint: stepFingerprint(step, activeStepOutputs(state.steps, state.outputs,
+              Object.keys(state.invalidated ?? {}).filter((item) => state.invalidated[item])), state.base),
+          } : key }, ...(v2 ? { invalidated: { [step.id]: false } } : {}) };
         }),
       )
       .addNode("after_batch", (state: State) => {
@@ -567,15 +646,44 @@ export class AgentGraphWorkflow {
         }) as RunCommand;
         if (command.action !== "answer" || !command.text?.trim())
           throw new BadRequestException("请补充回答");
-        return { questions: { [key]: null }, answers: { [key]: command.text } };
+        return { questions: { [key]: null }, answers: { [key]: command.text },
+          constraintInput: { id: `resume:${command.request_id}`, text: command.text },
+          constraintNext: Object.entries(state.questions).some(([id, value]) => id !== key && value)
+            ? 'clarify' : state.plan ? 'decide_next' : 'compose' };
       })
+      .addNode('update_constraints', wrap('update_constraints', async (state: State) => {
+        if (!state.constraintInput) return {};
+        const previous = await base(state);
+        const value = await this.document.buildContext(request, context, environment(state),
+          state.constraintInput.id, state.constraintInput.text, { skill: previous.context.skill_snapshot,
+            preferences: previous.context.user_preferences, extractPreferences: state.constraintInput.kind !== 'approval' });
+        const key = `base:${state.constraintInput.id}`;
+        await repo.saveArtifact(id, generation, key, { ...previous, context: value });
+        return { base: key, constraintInput: null };
+      }))
       .addNode(
         "compose",
         wrap("compose", async (state: State) => {
-          const result = await worker(state);
+          let result = await worker(state);
           if (result.result.kind === "clarification")
             return { questions: { primary: result.result } };
-          const key = `primary:${run.execution_generation}`;
+          if (research) {
+            const dependencies = await completed(state);
+            const notes = Object.entries(dependencies).flatMap(([task_id, output]) => (output.research_notes ?? []).map(note => ({ ...note, task_id })));
+            const source_keys = Object.values(activeStepOutputs(state.steps, state.outputs,
+              Object.keys(state.invalidated ?? {}).filter(key => state.invalidated[key]), state.base));
+            const noteArtifact = { notes, source_keys };
+            const notesKey = `research:notes:${contentHash(noteArtifact)}`;
+            await repo.saveArtifact(id, generation, notesKey, noteArtifact);
+            await repo.saveDelivery(id, generation, { research_notes_key: notesKey });
+            result = await this.research.chapters({ request: environment(state, true).request, skill: researchSkill!,
+              brief: await repo.artifact<ResearchBrief>(id, state.researchBrief), candidate: result,
+              turn: (messages, options) => this.runtime.turn(options.trace_name === 'research_section'
+                ? { ...environment(state, true), task_id: 'research_writer' } : environment(state, true), messages, [], options),
+              preview: (evidence, goal) => this.runtime.evidencePreview(evidence, goal),
+              load: key => repo.optionalArtifact(id, key), save: (key, value) => repo.saveArtifact(id, generation, key, value), emit, signal });
+          }
+          const key = v2 ? `primary:v2:${state.candidateVersion}` : `primary:${run.execution_generation}`;
           await repo.saveArtifact(id, generation, key, result);
           return { primary: key };
         }),
@@ -585,21 +693,37 @@ export class AgentGraphWorkflow {
         wrap("review_candidate", async (state: State) => {
           const result = await output(state.primary),
             b = await base(state);
+          const observed = v2 ? candidateEvidence(result) : result;
+          if (research) {
+            const report = await this.research.review(await repo.artifact<ResearchBrief>(id, state.researchBrief), result,
+              await completed(state), state.candidateVersion, !state.correctionCount && !state.trace.supplement_count && state.steps.length < this.supervisor.maxPlanSteps(),
+              (messages, options) => this.runtime.turn(environment(state, true), messages, [], options));
+            const reportKey = `research:coverage:${state.candidateVersion}`;
+            await repo.saveArtifact(id, generation, reportKey, { ...report, source_keys: [state.primary,
+              ...Object.values(activeStepOutputs(state.steps, state.outputs,
+                Object.keys(state.invalidated ?? {}).filter(key => state.invalidated[key]), state.base))] });
+            await repo.saveDelivery(id, generation, { research_coverage_key: reportKey,
+              research_completeness: report.completeness });
+            emit('research_coverage', { ...report, items: report.items, status: report.deliverable ? report.completeness : 'repairing' });
+            const key = `reviewed:v2:${state.candidateVersion}`;
+            await repo.saveArtifact(id, generation, key, { ...result, candidate_version: state.candidateVersion });
+            return { reviewed: key, researchReview: reportKey };
+          }
           const review = await this.document.reviewCandidate(
             result.result,
             environment(state, true),
             b.context,
             state.plan ?? undefined,
-            new Map(result.citations.map((c) => [c.id, c])),
-            new Map(result.evidence),
+            new Map(observed.citations.map((c) => [c.id, c])),
+            new Map(observed.evidence),
             run,
           );
-          const key = `reviewed:${run.execution_generation}`;
+          const key = v2 ? `reviewed:v2:${state.candidateVersion}` : `reviewed:${run.execution_generation}`;
           await repo.saveArtifact(id, generation, key, {
             ...result,
             result: review.candidate,
             reflection: run.payload.reflection,
-            candidate_version: review.revised ? 1 : 0,
+            candidate_version: v2 ? state.candidateVersion : review.revised ? 1 : 0,
           });
           return { reviewed: key };
         }),
@@ -653,17 +777,16 @@ export class AgentGraphWorkflow {
         s.plan
           ? s.needsApproval && !s.approved
             ? "review_plan"
-            : "decide_next"
+              : research ? 'research_brief' : "decide_next"
           : s.needsPlan
             ? "make_plan"
             : "compose",
       )
       .addConditionalEdges("make_plan", (s) =>
-        s.needsApproval && !s.approved ? "review_plan" : "decide_next",
+        research ? 'research_brief' : s.needsApproval && !s.approved ? "review_plan" : "decide_next",
       )
-      .addConditionalEdges("review_plan", (s) =>
-        s.approved ? "decide_next" : "make_plan",
-      )
+      .addEdge('review_plan', 'update_constraints')
+      .addConditionalEdges('update_constraints', s => research && constraintContinuation(s) === 'decide_next' ? 'research_brief' : constraintContinuation(s))
       .addConditionalEdges("decide_next", (s) =>
         s.decision?.action === "dispatch"
           ? s.decision.task_ids.map(
@@ -677,20 +800,136 @@ export class AgentGraphWorkflow {
       .addConditionalEdges("after_batch", (s) =>
         Object.values(s.questions).some(Boolean) ? "clarify" : "decide_next",
       )
-      .addConditionalEdges("clarify", (s) =>
-        Object.values(s.questions).some(Boolean)
-          ? "clarify"
-          : s.plan
-            ? "decide_next"
-            : "compose",
-      )
+      .addEdge('clarify', 'update_constraints')
       .addConditionalEdges("compose", (s) =>
         Object.values(s.questions).some(Boolean)
           ? "clarify"
           : "review_candidate",
       )
-      .addEdge("review_candidate", "deliver")
       .addEdge("deliver", END);
+    if (v2) {
+      if (research) builder.addNode('research_brief', wrap('research_brief', async (state: State) => {
+        const effective = environment(state).request, b = await base(state);
+        const fingerprint = contentHash({ plan: state.plan, query: effective.query, constraints: writingConstraints(b.context), skill: researchSkill });
+        const key = `research:brief:${fingerprint}`;
+        let brief = await repo.optionalArtifact<ResearchBrief>(id, key);
+        if (!brief) {
+          brief = await this.research.brief(effective, state.plan!, researchSkill!,
+            (messages, options) => this.runtime.turn(environment(state), messages, [], options));
+          await repo.saveArtifact(id, generation, key, brief);
+        }
+        await repo.saveDelivery(id, generation, { research_brief_key: key, research_workflow: true });
+        emit('research_brief', { brief });
+        return { researchBrief: key };
+      })).addConditionalEdges('research_brief', s => s.needsApproval && !s.approved ? 'review_plan' : 'decide_next');
+      builder.addNode('verify_evidence', wrap('verify_evidence', async (state: State) => {
+        const candidate = await output(state.reviewed), b = await base(state);
+        const observed = candidateEvidence(candidate);
+        const dependencies = await completed(state);
+        emit('verification', { status: state.correctionCount ? 'rechecking' : 'checking', candidate_version: state.candidateVersion });
+        const report = await this.verification.verify({
+          ...(research ? { batch_chars: 2400 } : {}),
+          candidate: candidate.result, candidate_version: state.candidateVersion,
+          request: environment(state).request, plan: state.plan ?? undefined,
+          constraints: writingConstraints(b.context), citations: observed.citations, evidence: observed.evidence,
+          step_evidence: Object.fromEntries(Object.entries(dependencies).map(([key, value]) => [key, value.citations.map((citation) => citation.id)])),
+          step_findings: Object.fromEntries(Object.entries(dependencies).map(([key, value]) => [key, value.handoff])),
+          signal,
+        }, (messages, options) => this.runtime.turn(environment(state, true), messages, [], options)).catch(async (error) => {
+          emit('verification', { status: 'incomplete', candidate_version: state.candidateVersion,
+            message: error instanceof Error ? error.message : '证据核验未完成' });
+          await events;
+          throw error;
+        });
+        if (research && state.researchReview) {
+          const coverage = await repo.artifact<ResearchReview>(id, state.researchReview);
+          if (report.passed && !coverage.deliverable) {
+            report.passed = false;
+            report.recovery = { action: coverage.recovery.action === 'none' ? 'repair' : coverage.recovery.action,
+              claim_ids: [], step_ids: [], instruction: coverage.recovery.instruction || '补全未覆盖问题或明确说明资料不足。',
+              ...(coverage.recovery.question ? { question: coverage.recovery.question } : {}) };
+          }
+        }
+        const key = `verification:${state.candidateVersion}`;
+        await repo.saveArtifact(id, generation, key, report);
+        await repo.saveDelivery(id, generation, { verification: { candidate_version: report.candidate_version,
+          passed: report.passed, claim_count: report.claims.length, action: report.recovery.action } });
+        emit('verification', { status: report.passed ? 'passed' : 'repairing', candidate_version: state.candidateVersion,
+          issues: report.claims.filter((claim) => claim.status !== 'supported').map((claim) => ({ type: claim.status, description: claim.reason })) });
+        return { verification: key };
+      }))
+      .addNode('recover_candidate', wrap('recover_candidate', async (state: State) => {
+        const report = await repo.artifact<VerificationReport>(id, state.verification);
+        if (state.correctionCount >= 1)
+          throw new AgentExecutionError('AGENT_REVIEW_FAILED', '证据问题在一次纠错后仍未通过核验，请调整要求');
+        const candidateVersion = state.candidateVersion + 1;
+        const common = { correctionCount: 1, candidateVersion, recoveryInstruction: report.recovery.instruction };
+        if (report.recovery.action === 'clarify') return { ...common,
+          questions: { verification: { question: report.recovery.question || report.recovery.instruction, choices: [] } } };
+        if (research && (['none', 'repair'].includes(report.recovery.action) || report.recovery.action === 'research' &&
+          (state.trace.supplement_count || state.steps.length >= this.supervisor.maxPlanSteps()))) {
+          if (report.recovery.action === 'research') {
+            report.recovery.action = 'repair';
+            report.recovery.instruction += ' 补查额度已使用，仅根据现有证据修订并逐项说明仍缺资料的部分。';
+          }
+          const candidate = await output(state.reviewed);
+          const revised = await this.research.repair(environment(state, true).request,
+            await repo.artifact<ResearchBrief>(id, state.researchBrief), candidate,
+            { evidence: report, coverage: await repo.artifact(id, state.researchReview) },
+            (messages, options) => this.runtime.turn(environment(state, true), messages, [], options));
+          const key = `primary:v2:${candidateVersion}`;
+          await repo.saveArtifact(id, generation, key, { ...candidate, result: revised });
+          const reportKey = `${state.verification}:repair`;
+          await repo.saveArtifact(id, generation, reportKey, report);
+          return { ...common, primary: key, verification: reportKey };
+        }
+        if (report.recovery.action === 'repair' || report.recovery.action === 'none') {
+          const candidate = await output(state.reviewed), b = await base(state);
+          const observed = candidateEvidence(candidate);
+          const revised = await this.verification.repair({ candidate: candidate.result,
+            candidate_version: state.candidateVersion, request: environment(state).request,
+            plan: state.plan ?? undefined, constraints: writingConstraints(b.context),
+            citations: observed.citations, evidence: observed.evidence, signal,
+          }, report, (messages, options) => this.runtime.turn(environment(state, true), messages, [], options)).catch(async (error) => {
+            emit('verification', { status: 'incomplete', candidate_version: state.candidateVersion,
+              message: error instanceof Error ? error.message : '候选修复未完成' });
+            await events;
+            throw error;
+          });
+          const key = `reviewed:v2:${candidateVersion}`;
+          await repo.saveArtifact(id, generation, key, { ...candidate, result: revised, candidate_version: candidateVersion });
+          return { ...common, reviewed: key };
+        }
+        const done = await completed(state);
+        if (report.recovery.action === 'research') {
+          if (state.trace.supplement_count || state.steps.length >= this.supervisor.maxPlanSteps())
+            throw new AgentExecutionError('AGENT_REVIEW_FAILED', '补充研究额度已使用，请补充资料后重新生成');
+          const step = { id: `verification_research_${state.planVersion}`, capability: 'search' as const,
+            description: report.recovery.instruction, depends_on: Object.keys(done) };
+          const trace = { ...state.trace, supplement_count: state.trace.supplement_count + 1 };
+          return { ...common, trace, steps: [...state.steps, step],
+            plan: state.plan ?? { goal: request.query, outline: [], constraints: [], steps: [step] } };
+        }
+        const invalidated = dependencyClosure(state.steps, report.recovery.step_ids);
+        if (!invalidated.length) throw new AgentExecutionError('AGENT_REVIEW_FAILED', '无法定位需要重新执行的步骤');
+        const replanning = { invalidated_steps: invalidated, reused_steps: Object.keys(done).filter((key) => !invalidated.includes(key)),
+          plan_version: state.planVersion + 1 };
+        emit('replanning', replanning);
+        await repo.saveDelivery(id, generation, { replanning });
+        return { ...common, planVersion: state.planVersion + 1,
+          invalidated: Object.fromEntries(invalidated.map((key) => [key, true])) };
+      }))
+      .addConditionalEdges('review_candidate', () => 'verify_evidence')
+      .addConditionalEdges('verify_evidence', async (state: State) => {
+        const report = await repo.artifact<VerificationReport>(id, state.verification);
+        return report.passed ? 'deliver' : 'recover_candidate';
+      })
+      .addConditionalEdges('recover_candidate', async (state: State) => {
+        if (Object.values(state.questions).some(Boolean)) return 'clarify';
+        const report = await repo.artifact<VerificationReport>(id, state.verification);
+        return ['repair', 'none'].includes(report.recovery.action) ? research ? 'review_candidate' : 'verify_evidence' : state.steps.length ? 'decide_next' : 'compose';
+      });
+    } else builder.addEdge('review_candidate', 'deliver');
     const saver = new MySqlCheckpointSaver(repo.db, async (manager) => {
       await repo.fence(manager, id, generation);
     });

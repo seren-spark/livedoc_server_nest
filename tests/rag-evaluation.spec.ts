@@ -104,6 +104,17 @@ describe('frozen RAG evaluation', () => {
     expect(scoreGradedRanking(items, ['part', 'none', 'full'], 3).ndcg).toBeLessThan(1);
     expect(() => scoreGradedRanking(items, ['full', 'full', 'none'], 3)).toThrow('完整排列');
   });
+  test('binds recorded selection strategy into the evidence hash while preserving legacy snapshots', () => {
+    const citations = [citation('a', 1, 'source')];
+    const legacy = { schema_version: 1 as const, candidate_stage: 'authorized_fused_before_rerank' as const,
+      candidate_limit: 20 as const, candidates: citations, ranked: citations };
+    const ranked = { ...legacy, selection_strategy: 'rank-v1' as const };
+    const covered = { ...legacy, selection_strategy: 'facet-v1' as const };
+    expect(retrievalEvidence(legacy)).not.toHaveProperty('selection_strategy');
+    expect(retrievalEvidence(ranked)).toHaveProperty('selection_strategy', 'rank-v1');
+    expect(evidenceSnapshot('t', 'prompt', citations, true, ranked).retrieval_debug_sha256)
+      .not.toBe(evidenceSnapshot('t', 'prompt', citations, true, covered).retrieval_debug_sha256);
+  });
   test('writer snapshots all actual inputs, retains only cited sources in the answer and respects document scope', async () => {
     const citations = [citation('a', 2, '先规划'), citation('b', 5, '再执行')];
     const debug = { schema_version: 1 as const, candidate_stage: 'authorized_fused_before_rerank' as const, candidate_limit: 20 as const,

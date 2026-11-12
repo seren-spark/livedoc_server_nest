@@ -25,6 +25,9 @@ async function main() {
   validateAssets(corpus, allCases);
   const chunkManifestPath = arg('--chunk-manifest');
   const endToEnd = flag('--end-to-end');
+  // Frozen retrieval keeps direct Top-K unless the new selection experiment is explicitly requested.
+  const evidenceSelection = flag('--evidence-selection') || !flag('--retrieval-only');
+  const selectionStrategy = evidenceSelection ? 'facet-v1' : 'rank-v1';
   const chunkManifest: Json | undefined = chunkManifestPath ? JSON.parse(readFileSync(chunkManifestPath, 'utf8')) : undefined;
   if (chunkManifest) {
     validateRetrievalLabels(corpus, allCases, chunkManifest);
@@ -42,7 +45,9 @@ async function main() {
   const selected = arg('--case-ids')?.split(',');
   if (selected?.some(id => !allCases.some(c => c.case_id === id))) throw new Error('case-ids 含未知问题');
   const cases = allCases.filter(c => !selected || selected.includes(c.case_id)).slice(0, limit);
-  if (flag('--validate-only')) { console.log(JSON.stringify({ status: 'valid', corpus_documents: corpus.length, cases: cases.length })); return; }
+  if (flag('--validate-only')) { console.log(JSON.stringify({ status: 'valid', corpus_documents: corpus.length,
+    cases: cases.length, evidence_selection: evidenceSelection, selection_strategy: selectionStrategy,
+    answer_selection_strategy: flag('--retrieval-only') ? null : 'facet-v1' })); return; }
   if (!flag('--retrieval-only') && (mode !== 'hybrid' || topK !== 5)) throw new Error('回答链路固定 hybrid/top_k=5；比较其他检索模式请使用 --retrieval-only，不能冒充回答配置');
   const baseUrl = arg('--base-url', process.env.RAG_API_BASE_URL ?? 'http://127.0.0.1:8001')!.replace(/\/$/u, '');
   const runDir = resolve(arg('--run-dir', resolve(arg('--output-dir', 'evals/results')!, new Date().toISOString().replace(/[:.]/gu, '-')))!);
@@ -57,9 +62,11 @@ async function main() {
   const metadataPath = resolve(runDir, 'metadata.json');
   const checkpointPath = resolve(runDir, 'checkpoint.json');
   const options = { base_url: baseUrl, top_k: topK, mode, retrieval_only: flag('--retrieval-only'), case_ids: cases.map(c => c.case_id),
+    evidence_selection: evidenceSelection, selection_strategy: selectionStrategy,
+    answer_selection_strategy: flag('--retrieval-only') ? null : 'facet-v1',
     ...(arg('--runtime-build') ? { runtime_build: resolve(arg('--runtime-build')!), concurrency } : concurrency !== 1 ? { concurrency } : {}),
     ...(chunkManifest ? { expand_query: false, rerank: !flag('--no-rerank'), candidate_k: 20, end_to_end: endToEnd } : {}) };
-  const protocol = { version: chunkManifest ? 3 : 2, dataset_sha256: fingerprint(allCases), corpus_sha256: fingerprint(corpus.map(identity)),
+  const protocol = { version: chunkManifest ? 4 : 3, dataset_sha256: fingerprint(allCases), corpus_sha256: fingerprint(corpus.map(identity)),
     source_sha256: sourceHash(), options, ...(chunkManifest ? { chunk_manifest_sha256: fingerprint(chunkManifest), dataset_version: chunkManifest.dataset_version } : {}) };
   let commit = 'unknown'; try { commit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(); } catch { /* git optional */ }
   const health = (await request('/health')).body;
@@ -147,8 +154,11 @@ async function main() {
         try {
           const search = await request('/knowledge/search', { method: 'POST', headers,
             body: JSON.stringify({ query: c.query, scope, top_k: topK, mode,
-              ...(chunkManifest ? { include_retrieval_debug: true, expand_query: false, rerank: options.rerank } : {}) }) });
+              include_retrieval_debug: true, evidence_selection: evidenceSelection,
+              ...(chunkManifest ? { expand_query: false, rerank: options.rerank } : {}) }) });
           row.search = search.body; row.search_latency_ms = search.latency;
+          if (row.search.retrieval_debug?.selection_strategy !== selectionStrategy)
+            throw new Error('检索服务未按请求返回证据选择策略，请升级后端并核对开关');
           if (chunkManifest) {
             const debug = row.search.retrieval_debug;
             if (!debug) throw new Error('缺少候选池快照，请先升级后端');
@@ -169,6 +179,8 @@ async function main() {
             row.answer = answer.body; row.answer_latency_ms = answer.latency;
             if (!row.answer.evidence_snapshot) throw new Error('回答接口未返回实际证据快照，请先升级后端');
             if (endToEnd && !row.answer.evidence_snapshot.retrieval_debug) throw new Error('缺少本轮回答自身的检索快照，不能使用独立搜索冒充');
+            if (endToEnd && row.answer.evidence_snapshot.retrieval_debug.selection_strategy !== options.answer_selection_strategy)
+              throw new Error('实际回答证据选择策略与生产协议不符');
           }
           row.status = options.retrieval_only ? 'retrieval_only' : 'completed';
         } catch (error) { row.status = 'error'; row.error = error instanceof Error ? error.message : String(error); }

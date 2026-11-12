@@ -4,6 +4,7 @@ import {
   ConflictException,
   ServiceUnavailableException,
   HttpException,
+  BadRequestException,
 } from "@nestjs/common";
 import { Command, RunControl, isGraphDrained } from "@langchain/langgraph";
 import { AppConfig } from "../../config/app-config.js";
@@ -26,6 +27,14 @@ import {
 } from "./agent-run.repository.js";
 import { AgentGraphWorkflow } from "./agent-graph.workflow.js";
 import { MySqlCheckpointSaver } from "./mysql-checkpoint-saver.js";
+import { graphFingerprint, supportedPolicy } from './graph-policy.js';
+import { activeStepOutputs, type StepOutputs } from '../step-versions.js';
+
+function progressOutputs(run: GraphRun, state: Record<string, any> | undefined): string[] {
+  if (run.graph_version === 'v1') return Object.values(state?.outputs ?? {});
+  return Object.values(activeStepOutputs(state?.steps ?? [], state?.outputs as StepOutputs ?? {},
+    Object.keys(state?.invalidated ?? {}).filter((key) => state!.invalidated[key]), state?.base));
+}
 
 @Injectable()
 export class AgentGraphService implements OnModuleDestroy {
@@ -94,8 +103,11 @@ export class AgentGraphService implements OnModuleDestroy {
       context,
     );
     if (previous) return this.publicRun(previous);
+    if (input.skill_id && this.config.agentGraphVersion !== 'v2')
+      throw new BadRequestException('写作 Skill 需要新版可恢复任务');
     await this.document.validateIdentity(input, context);
-    const run = await this.repository.create(input, context);
+    const skill = this.config.agentGraphVersion === 'v2' ? await this.document.selectedSkill(input, context) : undefined;
+    const run = await this.repository.create(input, context, skill);
     return this.publicRun(run);
   }
 
@@ -122,6 +134,10 @@ export class AgentGraphService implements OnModuleDestroy {
         output_target: run.payload.output_target,
         error: run.payload.error,
         feedback: run.payload.feedback,
+        verification: run.payload.verification,
+        research_workflow: run.payload.research_workflow,
+        research_completeness: run.payload.research_completeness,
+        replanning: run.payload.replanning,
       },
       usage: run.budget,
       active_ms: run.active_ms,
@@ -155,21 +171,40 @@ export class AgentGraphService implements OnModuleDestroy {
     }
     return this.publicRun(run, true);
   }
+  async research(id: string, context: AccessContext, question: string | undefined, offset: number, limit: number) {
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 20)
+      throw new BadRequestException('研究明细分页参数无效');
+    const run = await this.repository.get(id, context);
+    await this.authorizeProgress(id, context);
+    const brief = run.payload.research_brief_key ? await this.repository.artifact(id, run.payload.research_brief_key) : null;
+    const coverageArtifact = run.payload.research_coverage_key ? await this.repository.artifact<any>(id, run.payload.research_coverage_key) : null;
+    const noteArtifact = run.payload.research_notes_key ? await this.repository.artifact<any>(id, run.payload.research_notes_key) : null;
+    for (const artifact of [coverageArtifact, noteArtifact].filter(Boolean)) {
+      if (!Array.isArray(artifact.source_keys) || artifact.source_keys.some((key: unknown) => typeof key !== 'string'))
+        throw new ConflictException('研究记录缺少来源校验信息，请重新生成');
+    }
+    for (const key of new Set<string>([...(coverageArtifact?.source_keys ?? []), ...(noteArtifact?.source_keys ?? [])])) {
+      const source = await this.repository.artifact<WorkerOutput>(id, key);
+      await this.document.validateGraphSources(source.citations, source.wiki_reads ?? [], context);
+    }
+    const { source_keys: _sources, ...coverageReport } = coverageArtifact ?? {};
+    const coverage = coverageArtifact ? coverageReport : null;
+    const notes = (noteArtifact?.notes ?? []).filter((note: any) => !question || note.question_id === question);
+    return { brief, coverage, notes: notes.slice(offset, offset + limit), total: notes.length,
+      next_offset: offset + limit < notes.length ? offset + limit : null };
+  }
   async authorizeProgress(id: string, context: AccessContext) {
     const current = await this.auth.identityByUserId(context.user_id);
     if (!current || current.space_id !== context.space_id)
       throw new ConflictException("访问身份已失效");
+    Object.assign(context, current);
     const input = await this.repository.artifact<DocumentAgentDto>(id, "input");
     await this.document.validateIdentity(input, current, undefined, true);
     const tuple = await new MySqlCheckpointSaver(this.repository.db).getTuple({
       configurable: { thread_id: id },
     });
-    for (const ref of Object.values(
-      (tuple?.checkpoint.channel_values.outputs ?? {}) as Record<
-        string,
-        string
-      >,
-    )) {
+    const run = await this.repository.get(id, current);
+    for (const ref of progressOutputs(run, tuple?.checkpoint.channel_values)) {
       const result = await this.repository.artifact<WorkerOutput>(id, ref);
       await this.document.validateGraphSources(
         result.citations,
@@ -211,9 +246,7 @@ export class AgentGraphService implements OnModuleDestroy {
         this.repository.db,
       ).getTuple({ configurable: { thread_id: id } });
       const state = checkpoint?.checkpoint.channel_values;
-      for (const ref of Object.values(
-        (state?.outputs ?? {}) as Record<string, string>,
-      )) {
+      for (const ref of progressOutputs(owned, state)) {
         const result = await this.repository.artifact<WorkerOutput>(id, ref);
         await this.document.validateGraphSources(
           result.citations,
@@ -385,8 +418,9 @@ export class AgentGraphService implements OnModuleDestroy {
 
   private compatible(run: GraphRun) {
     return (
-      run.graph_version === "v1" &&
-      run.payload.config_fingerprint === this.config.configFingerprint &&
+      ['v1', 'v2'].includes(run.graph_version) &&
+      (run.graph_version === 'v1' || supportedPolicy(run.payload.policy)) &&
+      run.payload.config_fingerprint === graphFingerprint(this.config.configFingerprint, run.graph_version, run.payload.policy) &&
       run.payload.limits.execution_turns === this.config.agentMaxToolCalls &&
       run.payload.limits.max_output_tokens === this.config.agentMaxOutputTokens
     );

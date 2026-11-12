@@ -18,15 +18,8 @@ const pairs = a.cases.map((x: Json) => ({ a: x, b: b.cases.find((y: Json) => x.c
 if (pairs.some((p: Json) => !p.b)) throw new Error('报告缺少对应问题');
 const hasSearch = (p: Json) => p.a.search && p.b.search && (!a.chunk_manifest_sha256 || (p.a.retrieval_grade && p.b.retrieval_grade));
 const comparable = pairs.filter((p: Json) => hasSearch(p) && p.a.relevant_doc_ids?.length);
-const metrics = Object.fromEntries(['recall', 'mrr', 'ndcg'].map(metric => {
-  const differences = comparable.map((p: Json) => {
-    const score = (r: Json) => rankingMetrics(r.relevant_doc_ids, r.grade.returned_doc_ids, a.options.top_k)[metric as 'recall']!;
-    return score(p.b) - score(p.a);
-  });
-  return [metric, pairedBootstrap(differences)];
-}));
+const metrics: Record<string, ReturnType<typeof pairedBootstrap>> = {};
 if (a.chunk_manifest_sha256) {
-  for (const key of ['recall', 'mrr', 'ndcg']) delete metrics[key];
   for (const metric of ['recall_at_3', 'mrr_at_3', 'ndcg_at_3', 'candidate_recall_at_20', 'evidence_group_recall_at_3']) {
     const valid = pairs.filter((p: Json) => p.a.retrieval_grade?.recall_at_3 != null && p.b.retrieval_grade?.recall_at_3 != null);
     metrics[metric] = pairedBootstrap(valid.map((p: Json) => {
@@ -34,15 +27,50 @@ if (a.chunk_manifest_sha256) {
       return score(p.b) - score(p.a);
     }));
   }
+} else {
+  for (const metric of ['recall', 'mrr', 'ndcg']) {
+    metrics[metric] = pairedBootstrap(comparable.map((p: Json) => {
+      const score = (r: Json) => rankingMetrics(r.relevant_doc_ids, r.grade.returned_doc_ids, a.options.top_k)[metric as 'recall']!;
+      return score(p.b) - score(p.a);
+    }));
+  }
 }
+const selectionStrategy = (report: Json) => {
+  const enabled = report.options.evidence_selection;
+  if (typeof enabled !== 'boolean') return 'legacy-unspecified';
+  const strategy = enabled ? 'facet-v1' : 'rank-v1';
+  if (report.options.selection_strategy && report.options.selection_strategy !== strategy)
+    throw new Error('报告中的证据选择开关与策略版本冲突');
+  return strategy;
+};
+const baselineSelection = selectionStrategy(a), candidateSelection = selectionStrategy(b);
+const unrecordedFactors = [
+  ...(baselineSelection === 'legacy-unspecified' ? ['baseline.evidence_selection'] : []),
+  ...(candidateSelection === 'legacy-unspecified' ? ['candidate.evidence_selection'] : []),
+];
+const changedFactors = [
+  ['mode', a.options.mode, b.options.mode],
+  ['rerank', a.options.rerank, b.options.rerank],
+  ['evidence_selection', baselineSelection, candidateSelection],
+  ['source', a.source_sha256, b.source_sha256],
+  ['environment', fingerprint(a.environment ?? {}), fingerprint(b.environment ?? {})],
+  ['protocol', a.version, b.version],
+].filter(([, before, after]) => before !== after).map(([factor]) => String(factor));
+const isolatedFactor = !unrecordedFactors.length && changedFactors.length === 1 &&
+  ['mode', 'rerank', 'evidence_selection'].includes(changedFactors[0]!) ? changedFactors[0]! : null;
+const comparisonFactors = { baseline_selection_strategy: baselineSelection, candidate_selection_strategy: candidateSelection,
+  changed_factors: changedFactors, unrecorded_factors: unrecordedFactors, isolated_factor: isolatedFactor,
+  attribution: isolatedFactor ? 'single_recorded_factor' : changedFactors.length || unrecordedFactors.length
+    ? 'mixed_or_unrecorded_factors' : 'repeated_configuration' };
 const output = { direction: 'candidate_minus_baseline', question_count: pairs.length, paired_retrieval_questions: comparable.length,
   excluded_pairs: pairs.filter((p: Json) => !hasSearch(p)).map((p: Json) => p.a.case_id),
   baseline_errors: a.metrics.error_count, candidate_errors: b.metrics.error_count, metrics,
   baseline_environment: a.environment, candidate_environment: b.environment,
   ...(a.chunk_manifest_sha256 ? { chunk_manifest_sha256: a.chunk_manifest_sha256, dataset_version: a.dataset_version } : {}),
   source_changed: a.source_sha256 !== b.source_sha256, baseline_options: a.options, candidate_options: b.options,
-  limitation: '同题配对 bootstrap 仅比较已标注问题的检索结果，不等于答案正确率；失败配对单列，不静默删除。' };
+  comparison_factors: comparisonFactors,
+  limitation: '同题配对 bootstrap 仅比较已标注问题的检索结果，不等于答案正确率；失败配对单列，不静默删除。多因素或未记录的变化仅展示指标差异，不能归因于单项改动。' };
 const path = resolve(arg('--output') ?? 'evals/results/comparison.json');
 writeFileSync(path, JSON.stringify(output, null, 2) + '\n');
-writeFileSync(path.replace(/\.json$/u, '') + '.md', `# RAG 配对比较\n\n差值方向：候选 − 基线。${output.question_count} 题，${output.paired_retrieval_questions} 个有标注且检索成功的配对。\n\n| 指标 | 均值差 | 95% 区间 |\n| --- | --- | --- |\n${Object.entries(metrics).map(([key, value]) => `| ${key} | ${(value as Json).delta ?? '无标注'} | ${JSON.stringify((value as Json).ci95)} |`).join('\n')}\n\n失败配对：${output.excluded_pairs.join(', ') || '无'}。\n\n${output.limitation}\n`);
+writeFileSync(path.replace(/\.json$/u, '') + '.md', `# RAG 配对比较\n\n差值方向：候选 − 基线。${output.question_count} 题，${output.paired_retrieval_questions} 个有标注且检索成功的配对。\n\n| 指标 | 均值差 | 95% 区间 |\n| --- | --- | --- |\n${Object.entries(metrics).map(([key, value]) => `| ${key} | ${(value as Json).delta ?? '无标注'} | ${JSON.stringify((value as Json).ci95)} |`).join('\n')}\n\n失败配对：${output.excluded_pairs.join(', ') || '无'}。\n\n比较因素记录如下。\n\n\`\`\`json\n${JSON.stringify(comparisonFactors, null, 2)}\n\`\`\`\n\n${output.limitation}\n`);
 console.log(JSON.stringify({ output: path, ...output }, null, 2));

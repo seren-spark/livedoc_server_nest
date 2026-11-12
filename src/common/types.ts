@@ -85,6 +85,7 @@ export interface RetrievalDebug {
   schema_version: 1;
   candidate_stage: 'authorized_fused_before_rerank';
   candidate_limit: 20;
+  selection_strategy?: 'rank-v1' | 'facet-v1';
   candidates: Citation[];
   ranked: Citation[];
 }

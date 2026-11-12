@@ -1,9 +1,10 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { parse } from "dotenv";
 import mysql from "mysql2/promise";
 
-const env = parse(readFileSync(new URL("../.env", import.meta.url)));
+const file = new URL("../.env", import.meta.url);
+const env = existsSync(file) ? parse(readFileSync(file)) : {};
 const connectionUrl = process.env.GRAPH_TEST_DATABASE_URL ?? env.DATABASE_URL;
 const connection = await mysql.createConnection(connectionUrl);
 await connection.query(
@@ -15,12 +16,15 @@ url.pathname = "/livedoc_langgraph_integration_test";
 const child = spawn(
   process.execPath,
   [
-    "--max-old-space-size=768",
+    "--max-old-space-size=1536",
     "--experimental-vm-modules",
     "./node_modules/jest/bin/jest.js",
     "--runInBand",
     "--runTestsByPath",
     "tests/agent-graph.mysql.spec.ts",
+    "tests/conversation-constraints.mysql.spec.ts",
+    "tests/writing-skills.mysql.spec.ts",
+    "tests/writing-preferences.mysql.spec.ts",
     "--silent",
     ...process.argv.slice(2),
   ],
@@ -37,6 +41,7 @@ const child = spawn(
       DATABASE_URL: url.toString(),
       LIVEDOC_RUN_MIGRATIONS: "true",
       AGENT_GRAPH_ENABLED: "true",
+      AGENT_GRAPH_VERSION: "v1",
       LLM_API_KEY: "controlled-graph-test",
       VECTOR_STORE: "memory",
       EMBEDDING_PROVIDER: "hash",

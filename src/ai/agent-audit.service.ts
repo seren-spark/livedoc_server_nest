@@ -1,11 +1,14 @@
 import {
   ConflictException,
+  BadRequestException,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
 import { DatabaseService } from "../database/database.service.js";
 import type { AccessContext } from "../common/types.js";
 import type { WikiCaptureState } from "../wiki/wiki.types.js";
+import { windowHours } from '../observability/observability.service.js';
+import { summarizeAgentRuns, type AgentMetricRun } from './agent-metrics.js';
 export interface AgentRunRecord {
   run_id: string;
   request_id: string;
@@ -15,6 +18,8 @@ export interface AgentRunRecord {
   mode: string;
   status: string;
   payload: Record<string, any>;
+  created_at?: Date | string;
+  completed_at?: Date | string | null;
 }
 @Injectable()
 export class AgentAuditService {
@@ -26,6 +31,7 @@ export class AgentAuditService {
   }
   constructor(private readonly db: DatabaseService) {}
   async begin(run: AgentRunRecord) {
+    run.created_at ??= new Date();
     if (
       [...this.runs.values()].some(
         (r) =>
@@ -86,8 +92,10 @@ export class AgentAuditService {
         "failed",
         "stopped",
       ].includes(run.status)
-    )
+    ) {
       this.activeRuns.delete(run.run_id);
+      run.completed_at ??= new Date();
+    }
     if (this.db.metadataEnabled)
       await this.db
         .query(
@@ -197,5 +205,33 @@ export class AgentAuditService {
         [id],
       );
     return [...this.calls.values()].filter((r) => r.run_id === id);
+  }
+
+  async metrics(context: AccessContext, window = '24h') {
+    let hours: number;
+    try { hours = windowHours(window); }
+    catch { throw new BadRequestException('统计窗口支持 24h、7d 或 30d'); }
+    const from = new Date(Date.now() - hours * 3600000);
+    const limit = 500;
+    let runs: AgentMetricRun[];
+    if (this.db.metadataEnabled) {
+      const rows = await this.db.query<any>(
+        `SELECT run_id,request_id,user_id,space_id,conversation_id,mode,status,payload,budget,graph_version,
+          created_at,completed_at,active_ms FROM agent_runs
+          WHERE user_id=? AND space_id=? AND created_at>=? ORDER BY created_at DESC LIMIT 501`,
+        [context.user_id, context.space_id, from],
+      );
+      runs = rows.map((row) => ({ ...row,
+        payload: typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload,
+        budget: typeof row.budget === 'string' ? JSON.parse(row.budget) : row.budget,
+        active_ms: row.graph_version ? Number(row.active_ms) : undefined,
+      }));
+    } else {
+      runs = [...this.runs.values()].filter((run) => run.user_id === context.user_id &&
+        run.space_id === context.space_id && new Date(run.created_at ?? 0) >= from)
+        .sort((a, b) => new Date(b.created_at!).getTime() - new Date(a.created_at!).getTime());
+    }
+    return { window, from_time: from, to_time: new Date(), sampled_run_limit: limit,
+      truncated: runs.length > limit, ...summarizeAgentRuns(runs.slice(0, limit)) };
   }
 }

@@ -1,0 +1,453 @@
+[
+  {
+    "id": "verify-correct",
+    "feature": "verification",
+    "group": "verification",
+    "scenario": "correct",
+    "query": "[evaluation:verify-correct] 根据当前文档说明 Orion 的负责人和回滚窗口，逐项引用原文，不修改正文。",
+    "required": [
+      "陈青",
+      "48"
+    ],
+    "success_criteria": [
+      "关键结论通过证据核验",
+      "交付引用来自实际读取的原文",
+      "正确候选不执行修复"
+    ],
+    "real": true
+  },
+  {
+    "id": "verify-unsupported",
+    "feature": "verification",
+    "group": "verification",
+    "scenario": "unsupported",
+    "query": "[evaluation:verify-unsupported] 根据当前文档说明 Orion 的负责人和预算，资料没有记载预算时明确保留缺口，不修改正文。",
+    "required": [
+      "陈青",
+      "未记录"
+    ],
+    "success_criteria": [
+      "识别无依据预算",
+      "通过修复移除无依据结论并保留缺口",
+      "复验通过后交付"
+    ],
+    "real": false
+  },
+  {
+    "id": "verify-repaired",
+    "feature": "verification",
+    "group": "verification",
+    "scenario": "repaired",
+    "query": "[evaluation:verify-repaired] 根据当前文档说明 Orion 的回滚窗口，保持数字准确并引用原文，不修改正文。",
+    "required": [
+      "48"
+    ],
+    "success_criteria": [
+      "检测与原文不一致的数字",
+      "定向修复为48小时",
+      "修复候选经过第二次核验"
+    ],
+    "real": false
+  },
+  {
+    "id": "verify-recheck",
+    "feature": "verification",
+    "group": "verification",
+    "scenario": "recheck",
+    "query": "[evaluation:verify-recheck] 根据当前文档说明 Orion 的回滚窗口，修复仍与原文冲突时停止交付，不修改正文。",
+    "required": [],
+    "success_criteria": [
+      "修复后再次核验",
+      "复验失败的候选不能交付",
+      "修复轮数保持有界"
+    ],
+    "real": false
+  },
+  {
+    "id": "verify-error-interrupted",
+    "feature": "verification",
+    "group": "verification",
+    "scenario": "error_interrupted",
+    "query": "[evaluation:verify-error-interrupted] 根据当前文档说明 Orion 的负责人，核验服务暂时不可用后恢复原任务，不修改正文。",
+    "required": [
+      "陈青"
+    ],
+    "success_criteria": [
+      "核验不可用进入可恢复状态",
+      "恢复复用已完成的研究步骤",
+      "恢复后核验通过并交付"
+    ],
+    "real": false
+  },
+  {
+    "id": "verify-local-rerun",
+    "feature": "verification",
+    "group": "verification",
+    "scenario": "local_rerun",
+    "query": "[evaluation:verify-local-rerun] 先读取负责人资料，再读取回滚窗口资料，最后总结证据。发现步骤结论错误时只重跑受影响步骤及其下游，不修改正文。",
+    "required": [
+      "陈青",
+      "48"
+    ],
+    "success_criteria": [
+      "记录受影响步骤与依赖失效范围",
+      "未受影响成功步骤保持复用",
+      "局部重跑后复验通过"
+    ],
+    "real": false
+  },
+  {
+    "id": "verify-restart",
+    "feature": "verification",
+    "group": "verification",
+    "scenario": "restart",
+    "query": "[evaluation:verify-restart] 先给计划，确认后读取 Orion 的负责人和回滚窗口并总结证据。核验阶段暂停并重启服务后继续原任务，不修改正文。",
+    "required": [
+      "陈青",
+      "48"
+    ],
+    "success_criteria": [
+      "通过正式确认接口批准计划",
+      "跨进程恢复复用成功研究步骤",
+      "核验版本及预算不回滚",
+      "恢复后交付通过核验的候选"
+    ],
+    "real": false
+  },
+  {
+    "id": "skill-technical",
+    "feature": "skills",
+    "group": "skills",
+    "scenario": "technical",
+    "query": "[evaluation:skill-technical] 根据当前文档与选中资料，新建一篇技术文章，保留代码并准确说明 Orion 的负责人和回滚窗口。",
+    "required": [
+      "Orion",
+      "陈青",
+      "48",
+      "const retry = 3;"
+    ],
+    "success_criteria": [
+      "按选用的技术文章 Skill 执行步骤",
+      "新文稿保留代码且关键事实有引用",
+      "保存 Skill 与模板版本快照"
+    ],
+    "real": true
+  },
+  {
+    "id": "skill-meeting",
+    "feature": "skills",
+    "group": "skills",
+    "scenario": "meeting",
+    "query": "[evaluation:skill-meeting] 根据选中会议记录新建会议纪要，整理决策和行动项，未记录的截止日期标为待确认。",
+    "required": [
+      "陈青",
+      "待确认"
+    ],
+    "success_criteria": [
+      "按会议纪要 Skill 执行",
+      "决策和行动项来自会议原文",
+      "缺失日期保持待确认"
+    ],
+    "real": false
+  },
+  {
+    "id": "skill-comparison",
+    "feature": "skills",
+    "group": "skills",
+    "scenario": "comparison",
+    "query": "[evaluation:skill-comparison] 根据两份选中资料新建对比文稿，按预算与回滚窗口对比方案甲和方案乙，明确保留冲突。",
+    "required": [
+      "方案甲",
+      "方案乙",
+      "120",
+      "180",
+      "冲突"
+    ],
+    "success_criteria": [
+      "分别读取两份授权资料",
+      "按资料对比 Skill 汇总",
+      "预算冲突保留且引用归属正确"
+    ],
+    "real": false
+  },
+  {
+    "id": "skill-management",
+    "feature": "skills",
+    "group": "skills",
+    "scenario": "management",
+    "query": "[evaluation:skill-management] 使用选中的个人会议纪要 Skill 新建 Orion 会议纪要，负责人为陈青，日期缺失时待确认。",
+    "required": [
+      "陈青",
+      "待确认"
+    ],
+    "success_criteria": [
+      "个人 Skill 创建修改与版本 CAS 生效",
+      "不同用户无法访问或修改",
+      "元信息列表不加载步骤正文",
+      "参数绑定进入执行计划"
+    ],
+    "real": false
+  },
+  {
+    "id": "skill-permission",
+    "feature": "skills",
+    "group": "skills",
+    "scenario": "permission",
+    "query": "[evaluation:skill-permission] 根据当前会议记录新建会议纪要。本轮关闭联网，仅使用已选资料。",
+    "required": [
+      "陈青",
+      "待确认"
+    ],
+    "success_criteria": [
+      "Skill 声明无法扩大根联网授权",
+      "未授权搜索请求被拒绝",
+      "拒绝后仍可使用合法工具完成文稿"
+    ],
+    "real": false
+  },
+  {
+    "id": "skill-snapshot-restart",
+    "feature": "skills",
+    "group": "skills",
+    "scenario": "restart",
+    "query": "[evaluation:skill-snapshot-restart] 先给计划，确认后根据选中记录新建 Orion 会议纪要。",
+    "required": [
+      "陈青",
+      "待确认"
+    ],
+    "success_criteria": [
+      "计划通过正式接口确认",
+      "暂停后修改并删除个人 Skill",
+      "跨进程恢复使用原 Skill 与模板快照",
+      "成功步骤保持复用"
+    ],
+    "real": false
+  },
+  {
+    "id": "skill-suggestions",
+    "feature": "skills",
+    "group": "skills",
+    "scenario": "suggestions",
+    "query": "[evaluation:skill-suggestions] 根据当前资料说明 Orion 的基本情况，并建议适合后续写作的可复用能力，不修改正文。",
+    "required": [
+      "Orion"
+    ],
+    "success_criteria": [
+      "分类调用返回授权 Skill 元信息建议",
+      "建议经用户选用后才能启用",
+      "本次普通回答没有加载完整 Skill"
+    ],
+    "real": false
+  },
+  {
+    "id": "pref-explicit-cross-session",
+    "feature": "memory",
+    "group": "memory",
+    "scenario": "cross_session",
+    "query": "[evaluation:pref-explicit-cross-session] 请记住我的长期写作偏好：默认使用简洁技术文风。",
+    "required": [
+      "简洁技术文风"
+    ],
+    "success_criteria": [
+      "用户明确保存后立即生效",
+      "新会话及新文档读取已确认偏好",
+      "偏好带可核对用户原文"
+    ],
+    "real": true
+  },
+  {
+    "id": "pref-current-request",
+    "feature": "memory",
+    "group": "memory",
+    "scenario": "current_request",
+    "query": "[evaluation:pref-current-request] 请记住我的长期写作偏好：默认使用简洁技术文风。",
+    "required": [
+      "详细",
+      "简洁技术文风"
+    ],
+    "success_criteria": [
+      "本次详细要求覆盖长期简洁默认",
+      "长期偏好保持原值",
+      "本次临时要求不沉淀为长期偏好"
+    ],
+    "real": false
+  },
+  {
+    "id": "pref-candidate-confirm",
+    "feature": "memory",
+    "group": "memory",
+    "scenario": "candidate_confirm",
+    "query": "[evaluation:pref-candidate-confirm] 刚才的表达太口语化，以后我更喜欢正式技术文风。",
+    "required": [
+      "正式技术文风"
+    ],
+    "success_criteria": [
+      "自动产生待确认候选",
+      "候选确认前不进入上下文",
+      "用户确认后跨会话生效"
+    ],
+    "real": false
+  },
+  {
+    "id": "pref-candidate-reject",
+    "feature": "memory",
+    "group": "memory",
+    "scenario": "candidate_reject",
+    "query": "[evaluation:pref-candidate-reject] 刚才的表达太口语化，以后我更喜欢正式技术文风。",
+    "required": [
+      "没有已确认"
+    ],
+    "success_criteria": [
+      "拒绝候选后不生效",
+      "重复拒绝请求保持幂等",
+      "拒绝状态可查询"
+    ],
+    "real": false
+  },
+  {
+    "id": "pref-conflict-replace",
+    "feature": "memory",
+    "group": "memory",
+    "scenario": "conflict_replace",
+    "query": "[evaluation:pref-conflict-replace] 以后我更喜欢详细技术文风。",
+    "required": [
+      "详细技术文风"
+    ],
+    "success_criteria": [
+      "冲突候选不会自动覆盖已确认偏好",
+      "未明确替换返回冲突",
+      "显式替换后只有新偏好生效"
+    ],
+    "real": false
+  },
+  {
+    "id": "pref-management",
+    "feature": "memory",
+    "group": "memory",
+    "scenario": "management",
+    "query": "[evaluation:pref-management] 说明当前已确认的长期写作偏好。",
+    "required": [
+      "没有已确认"
+    ],
+    "success_criteria": [
+      "保存修改删除均使用版本控制",
+      "重复请求幂等且改变同一输入被拒绝",
+      "新会话读取修改后的值且删除后不注入"
+    ],
+    "real": false
+  },
+  {
+    "id": "pref-isolation",
+    "feature": "memory",
+    "group": "memory",
+    "scenario": "isolation",
+    "query": "[evaluation:pref-isolation] 说明当前已确认的长期写作偏好。",
+    "required": [
+      "简洁技术文风"
+    ],
+    "success_criteria": [
+      "不同用户无法读取偏好",
+      "同一用户切换空间后隔离",
+      "返回原空间可读取原偏好"
+    ],
+    "real": false
+  },
+  {
+    "id": "pref-snapshot-restart",
+    "feature": "memory",
+    "group": "memory",
+    "scenario": "restart",
+    "query": "[evaluation:pref-snapshot-restart] 先给计划，确认后读取当前资料，按长期写作偏好说明 Orion 的负责人并总结证据。",
+    "required": [
+      "简洁技术文风",
+      "陈青"
+    ],
+    "success_criteria": [
+      "任务保存偏好版本快照",
+      "暂停后修改偏好不改变原任务",
+      "跨进程恢复复用成功步骤与原偏好",
+      "新任务读取最新偏好"
+    ],
+    "real": false
+  },
+  {
+    "id": "context-compaction-retrieval",
+    "feature": "context",
+    "group": "context",
+    "scenario": "retrieval",
+    "query": "[evaluation:context-compaction-retrieval] 逐份读取三份长参考资料的首个长片段，本次阅读范围以各自首个分页为限。压缩后回取原始证据，核实 Orion 回滚窗口和重试代码，不修改正文。",
+    "required": [
+      "48",
+      "retry = 3"
+    ],
+    "success_criteria": [
+      "实际触发工具历史压缩",
+      "使用read_task_evidence回取原始片段",
+      "保留数字代码与来源标识",
+      "记录压缩前后Token和原文回取"
+    ],
+    "real": true
+  },
+  {
+    "id": "context-snapshot-restart",
+    "feature": "context",
+    "group": "context",
+    "scenario": "restart",
+    "query": "[evaluation:context-snapshot-restart] 先给计划，确认后逐份读取三份长参考资料并总结证据。压缩并回取原文后暂停重启，再继续说明 Orion 回滚窗口和重试代码。",
+    "required": [
+      "48",
+      "retry = 3"
+    ],
+    "success_criteria": [
+      "压缩和回取记录持久化",
+      "跨进程恢复复用成功步骤",
+      "恢复后引用和原文内容一致"
+    ],
+    "real": false
+  },
+  {
+    "id": "context-unknown-citation",
+    "feature": "context",
+    "group": "context",
+    "scenario": "unknown_citation",
+    "query": "[evaluation:context-unknown-citation] 逐份读取三份长参考资料并触发压缩，检查未知证据标识无法回取，不修改正文。",
+    "required": [],
+    "success_criteria": [
+      "实际触发压缩",
+      "未知citation回取被拒绝",
+      "越权后不交付候选"
+    ],
+    "real": false
+  },
+  {
+    "id": "context-source-version",
+    "feature": "context",
+    "group": "context",
+    "scenario": "source_version",
+    "query": "[evaluation:context-source-version] 先给计划，确认后逐份读取长参考资料，压缩后核实原文。来源版本变化时停止回取和交付。",
+    "required": [],
+    "success_criteria": [
+      "来源版本随证据保存",
+      "暂停后修改来源再恢复被拒绝",
+      "过期原文无法通过恢复继续使用"
+    ],
+    "real": false
+  },
+  {
+    "id": "context-edit-read-proof",
+    "feature": "context",
+    "group": "context",
+    "scenario": "edit_read_proof",
+    "query": "[evaluation:context-edit-read-proof] 先给计划，确认后先读取长参考资料和当前选区，再利用依赖证据回取核实回滚窗口，并改写当前选区，保持选区外不变。",
+    "required": [
+      "48"
+    ],
+    "success_criteria": [
+      "依赖原文回取不授予Primary选区阅读证明",
+      "未亲自读选区时修改请求被拒绝",
+      "亲自读取后才允许提交选区修改",
+      "空citation_ids编辑仍以Primary亲读原文执行证据核验"
+    ],
+    "real": false
+  }
+]

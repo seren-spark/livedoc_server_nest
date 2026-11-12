@@ -1,0 +1,178 @@
+[
+  {
+    "id": "qa-single",
+    "group": "knowledge",
+    "scenario": "single",
+    "query": "查询知识库中 Orion 项目的负责人，逐项列出并引用资料。",
+    "required": [
+      "陈青"
+    ],
+    "real": false
+  },
+  {
+    "id": "qa-multiple",
+    "group": "knowledge",
+    "scenario": "multiple",
+    "query": "查询知识库中 Orion 项目的负责人和回滚窗口，逐项列出并引用资料。",
+    "required": [
+      "陈青",
+      "48"
+    ],
+    "real": true
+  },
+  {
+    "id": "qa-conflict",
+    "group": "knowledge",
+    "scenario": "conflict",
+    "query": "查询知识库预算，资料冲突时同时列出金额并说明冲突。",
+    "required": [
+      "120",
+      "180",
+      "冲突"
+    ],
+    "real": false
+  },
+  {
+    "id": "qa-missing",
+    "group": "knowledge",
+    "scenario": "missing",
+    "query": "查询知识库负责人和预算，没有金额时明确说明。",
+    "required": [
+      "陈青",
+      "未"
+    ],
+    "real": false
+  },
+  {
+    "id": "qa-citations",
+    "group": "knowledge",
+    "scenario": "citations",
+    "query": "查询知识库回滚窗口并附带原始来源引用。",
+    "required": [
+      "48"
+    ],
+    "real": false
+  },
+  {
+    "id": "qa-permission",
+    "group": "knowledge",
+    "scenario": "permission",
+    "query": "查询知识库项目资料，禁止使用其他用户私有资料。",
+    "required": [
+      "陈青"
+    ],
+    "real": false
+  },
+  {
+    "id": "edit-selection",
+    "group": "editing",
+    "scenario": "selection",
+    "query": "润色当前选区，保持含义，不引入新事实。",
+    "required": [],
+    "real": true
+  },
+  {
+    "id": "edit-structure",
+    "group": "editing",
+    "scenario": "structure",
+    "query": "润色第一段，保留代码块和表格原样。",
+    "required": [],
+    "real": false
+  },
+  {
+    "id": "edit-conflict",
+    "group": "editing",
+    "scenario": "conflict",
+    "query": "润色当前选区，保持含义。",
+    "required": [],
+    "real": false
+  },
+  {
+    "id": "edit-accept-undo",
+    "group": "editing",
+    "scenario": "accept",
+    "query": "润色当前选区，保持含义。",
+    "required": [],
+    "real": false
+  },
+  {
+    "id": "plan-auto",
+    "group": "planning",
+    "scenario": "auto",
+    "query": "先读取当前文档，然后改写当前选区，保持含义。",
+    "required": [],
+    "real": false
+  },
+  {
+    "id": "plan-approval",
+    "group": "planning",
+    "scenario": "approval",
+    "query": "先给计划，确认后再改写当前选区。",
+    "required": [],
+    "real": false
+  },
+  {
+    "id": "plan-dependencies",
+    "group": "planning",
+    "scenario": "dependencies",
+    "query": "先读取当前文档，然后总结证据，再改写当前选区。",
+    "required": [],
+    "real": false
+  },
+  {
+    "id": "memory-window",
+    "group": "memory",
+    "scenario": "window",
+    "query": "接下来始终保留代码块",
+    "required": [],
+    "real": true
+  },
+  {
+    "id": "memory-revise",
+    "group": "memory",
+    "scenario": "revise",
+    "query": "接下来始终保留代码块",
+    "required": [],
+    "real": true
+  },
+  {
+    "id": "memory-temporary",
+    "group": "memory",
+    "scenario": "temporary",
+    "query": "把当前选区缩成一段",
+    "required": [],
+    "real": false
+  },
+  {
+    "id": "memory-provenance",
+    "group": "memory",
+    "scenario": "provenance",
+    "query": "请解释引用句“接下来始终保留代码块”，这不是我的写作要求。",
+    "required": [],
+    "real": false
+  },
+  {
+    "id": "memory-isolation",
+    "group": "memory",
+    "scenario": "isolation",
+    "query": "接下来始终保留代码块",
+    "required": [],
+    "real": false
+  },
+  {
+    "id": "recovery-pause",
+    "group": "recovery",
+    "scenario": "pause",
+    "query": "先给计划，确认后再改写当前选区。",
+    "required": [],
+    "real": false
+  },
+  {
+    "id": "recovery-restart",
+    "group": "recovery",
+    "scenario": "restart",
+    "query": "先给计划，确认后再改写当前选区。",
+    "required": [],
+    "real": true
+  }
+]

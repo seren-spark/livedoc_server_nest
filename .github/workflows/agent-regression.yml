@@ -5,7 +5,20 @@ permissions:
 jobs:
   regression:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: controlled-evaluation
+          MYSQL_ROOT_HOST: "%"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pcontrolled-evaluation"
+          --health-interval=10s --health-timeout=5s --health-retries=12
+    env:
+      GRAPH_TEST_DATABASE_URL: mysql://root:controlled-evaluation@127.0.0.1:3306/mysql
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,3 +30,19 @@ jobs:
       - run: npm run build
       - run: npm run validate:agents
       - run: npm run test:agent-gates
+      - run: npm run validate:agent-business
+      - run: npm run validate:agent-business -- --switching
+      - run: npm run validate:agent-business -- --enhancements
+      - run: npm test -- --runTestsByPath tests/conversation-constraints.spec.ts tests/dual-memory.spec.ts tests/agent-business-budget.spec.ts --silent
+      - run: npm test -- --runTestsByPath tests/model-governance.spec.ts tests/model-runtime-routing.spec.ts tests/evidence-selection.spec.ts tests/evidence-protocol.spec.ts tests/embedding-reuse.spec.ts tests/agent-metrics.spec.ts tests/agent-quality-report.spec.ts --silent
+      - run: npm test -- --runTestsByPath tests/evidence-verification.spec.ts tests/step-versions.spec.ts tests/graph-policy.spec.ts tests/writing-skills.spec.ts tests/writing-preferences.spec.ts tests/task-evidence.spec.ts tests/agent-enhancement-evaluation.spec.ts --silent
+      - run: npm run test:graph:mysql -- --testNamePattern 'constraint state transactions'
+      - run: npm run eval:agent-business
+      - run: npm run eval:agent-business -- --switching
+      - run: npm run eval:agent-capacity
+      - run: npm run eval:agent-business -- --enhancements
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-business-controlled
+          path: evals/results/agent-business-controlled-*/

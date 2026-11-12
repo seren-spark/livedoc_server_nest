@@ -1,3 +1,4 @@
+import { ConversationConstraintsService } from '../ai/conversation-constraints.service.js';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { Readable } from 'node:stream';
@@ -39,6 +40,7 @@ export class DocumentImportsService {
     private readonly memoryJobs: DocumentMemoryJobsService,
     private readonly documentMemory: DocumentMemoryService,
     @Inject(BLOB_STORAGE) private readonly blobs: BlobStorage,
+    private readonly constraints?: ConversationConstraintsService,
   ) {
     this.repository = new DocumentImportsRepository(database);
     this.jobStore = new PersistentJobStore({
@@ -355,6 +357,7 @@ export class DocumentImportsService {
       await this.patch(importId, { status: 'canceled', stage: '已取消', error: null });
       return;
     }
+    await this.constraints?.deleteDocument(importId, 'import');
     await this.assets.removeWhere({ import_id: importId });
     if (this.database.importJobsEnabled) {
       await this.repository.delete(importId);

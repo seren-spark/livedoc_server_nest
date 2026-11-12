@@ -7,6 +7,8 @@ import {
   IsNotEmpty,
   IsOptional,
   IsObject,
+  IsInt,
+  Min,
   IsString,
   MaxLength,
 } from "class-validator";
@@ -31,6 +33,9 @@ export class DocumentAgentDto {
   @IsArray() @ArrayMaxSize(10) references: ReferenceInput[] = [];
   @IsOptional() @Allow() knowledge_scope?: KnowledgeScope;
   @IsOptional() @IsString() template_id?: string;
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(128) skill_id?: string;
+  @IsOptional() @IsInt() @Min(1) skill_revision?: number;
+  @IsOptional() @IsObject() skill_inputs?: Record<string, string>;
   @IsOptional() @Allow() confirmed_plan?: ExecutionPlan;
 }
 export class AgentFeedbackDto {

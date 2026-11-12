@@ -1,0 +1,60 @@
+[
+  {
+    "id": "switch-edit-off",
+    "group": "editing",
+    "scenario": "selection",
+    "query": "只润色当前选区，保持含义，不引入新事实，其他段落原样保留。",
+    "required": [],
+    "real": true,
+    "deep_thinking": false
+  },
+  {
+    "id": "switch-plan-off",
+    "group": "planning",
+    "scenario": "approval",
+    "query": "先给计划，等待我确认后再改写当前选区。保持原意，其他段落原样保留。",
+    "required": [],
+    "real": true,
+    "deep_thinking": false
+  },
+  {
+    "id": "switch-edit-on",
+    "group": "editing",
+    "scenario": "selection",
+    "query": "只润色当前选区，保持含义，不引入新事实，其他段落原样保留。",
+    "required": [],
+    "real": true,
+    "deep_thinking": true
+  },
+  {
+    "id": "switch-plan-on",
+    "group": "planning",
+    "scenario": "approval",
+    "query": "先给计划，等待我确认后再改写当前选区。保持原意，其他段落原样保留。",
+    "required": [],
+    "real": true,
+    "deep_thinking": true
+  },
+  {
+    "id": "switch-web-off",
+    "group": "web",
+    "scenario": "offline",
+    "query": "只依据当前文档回答。当前文档是否说明 ProseMirror Transaction 的作用？没有相关资料就明确说明无法判断。",
+    "required": [],
+    "real": true,
+    "deep_thinking": false,
+    "allow_web": false
+  },
+  {
+    "id": "switch-web-on",
+    "group": "web",
+    "scenario": "online",
+    "query": "请联网检索 ProseMirror 官方文档，说明 Transaction 的作用，并引用可核对的网页来源。",
+    "required": [
+      "Transaction"
+    ],
+    "real": true,
+    "deep_thinking": false,
+    "allow_web": true
+  }
+]

@@ -14,6 +14,8 @@ import type {
 } from "../wiki/wiki.types.js";
 import type { AgentSpan } from "./agent-execution.js";
 import type { WorkerHandoff } from "./agent-handoff.js";
+import type { TaskContextEvent, TaskEvidence } from './task-evidence.js';
+import type { ResearchBrief, ResearchNote, ResearchProgress, WebSourceSnapshot } from './research-writing.js';
 
 export type WorkerRole = "primary" | "reader" | "researcher";
 export interface AgentUsage {
@@ -59,6 +61,10 @@ export interface WorkerEnvironment {
     ) => Promise<void>;
   };
   researchManaged?: boolean;
+  features?: { verification?: boolean; skills?: boolean; preferences?: boolean; context?: boolean; research_writing?: boolean };
+  research_brief?: ResearchBrief;
+  task_evidence?: () => TaskEvidence[];
+  context_events?: TaskContextEvent[];
   traces?: AgentSpan[];
   parent_span_id?: string;
   task_id?: string;
@@ -75,6 +81,7 @@ export interface WorkerEnvironment {
   emit: (event: string, data: Record<string, any>) => void;
 }
 export interface WorkerState {
+  web_snapshots?: Map<string, WebSourceSnapshot>;
   citations: Map<string, AgentCitation>;
   evidence: Map<string, string>;
   observations: Array<{ citation_id: string; content: string }>;
@@ -97,6 +104,9 @@ export interface WorkerInput {
   usage?: AgentUsage;
 }
 export interface WorkerOutput {
+  research_notes?: ResearchNote[];
+  research_progress?: ResearchProgress;
+  web_snapshots?: Array<[string, WebSourceSnapshot]>;
   result: AgentResult;
   handoff?: WorkerHandoff;
   citations: AgentCitation[];
@@ -106,6 +116,7 @@ export interface WorkerOutput {
   selection_read: boolean;
   usage: AgentUsage;
   wiki_reads?: WikiProof[];
+  context_events?: TaskContextEvent[];
 }
 
 // Cancellation detaches the caller; non-cancelable work may still settle later.

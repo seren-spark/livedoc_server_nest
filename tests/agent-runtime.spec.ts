@@ -10,6 +10,7 @@ import {
 } from "../src/ai/agent-runtime.types.js";
 import { request } from "./fixtures/agent-request.js";
 import { handoffArguments } from "./fixtures/worker-handoff.js";
+import { canFallbackModel } from '../src/ai/model-routing.js';
 
 function call(name: string, args: unknown, step = true) {
   if (name === "finish_answer" && step) args = handoffArguments(args);
@@ -32,6 +33,8 @@ function harness(wiki?: any) {
   const config = new AppConfig();
   const llm = {
     agentTurn: jest.fn<any>(),
+    agentAttempt: () => ({ model: config.llmModel, provider: config.llmProvider, contextWindow: config.llmContextWindow }),
+    canFallback: canFallbackModel,
     webSearchConfigured: true,
     searchWeb: jest.fn<any>(),
   };
@@ -102,6 +105,52 @@ const outputs = (messages: any[]) =>
   messages.filter((m) => m.role === "tool").map((m) => JSON.parse(m.content));
 
 describe("isolated document agent runtime", () => {
+  test('task evidence paging preserves original characters and grants no editor reading proof', async () => {
+    const h = harness();
+    h.input.environment.features = { context: true };
+    const state: import('../src/ai/agent-runtime.types.js').WorkerState = {
+      citations: new Map([['original', { id: 'original', kind: 'current_document', title: '原文', snapshot_hash: 'test' }]]),
+      evidence: new Map([['original', 'A😀B']]), observations: [], readRegions: new Set(), selectionRead: false,
+      wikiReads: [], wikiChecks: [], wikiFallbacks: [],
+    };
+    const first: any = await h.tools.execute(h.input, state, 'read_task_evidence', { citation_id: 'original', limit: 2 }, 'page-1');
+    const second: any = await h.tools.execute(h.input, state, 'read_task_evidence', { citation_id: 'original', offset: first.next_offset, limit: 2 }, 'page-2');
+    expect(first.content).toBe('A');
+    expect(second.content).toBe('😀');
+    expect(state.readRegions.size).toBe(0);
+    expect(state.selectionRead).toBe(false);
+    await expect(h.tools.execute(h.input, state, 'read_task_evidence', { citation_id: 'unknown' }, 'bad')).rejects.toThrow(ForbiddenException);
+  });
+
+  test('task evidence is reauthorized and checked against its source version', async () => {
+    const h = harness();
+    h.input.environment.features = { context: true };
+    const state: import('../src/ai/agent-runtime.types.js').WorkerState = {
+      citations: new Map([['known', { id: 'known', kind: 'document', title: '原文', doc_id: 'doc', version: 1 }]]),
+      evidence: new Map([['known', '窗口48小时']]), observations: [], readRegions: new Set(), selectionRead: false,
+      wikiReads: [], wikiChecks: [], wikiFallbacks: [],
+    };
+    h.documents.getAccessible.mockResolvedValue({ document_version: 2 });
+    await expect(h.tools.execute(h.input, state, 'read_task_evidence', { citation_id: 'known' }, 'changed')).rejects.toThrow(ConflictException);
+    h.documents.getAccessible.mockRejectedValue(new ForbiddenException('revoked'));
+    await expect(h.tools.execute(h.input, state, 'read_task_evidence', { citation_id: 'known' }, 'revoked')).rejects.toThrow(ForbiddenException);
+  });
+
+  test('v2 keeps observed selection evidence for verification when an edit adopts no citations', async () => {
+    const h = harness();
+    h.input.role = 'primary';
+    h.input.step = undefined;
+    h.input.environment.features = { verification: true };
+    h.input.environment.request.mode = 'agent';
+    h.llm.agentTurn.mockResolvedValueOnce(call('read_current_document', { region_ids: [], selection: true }, false))
+      .mockResolvedValueOnce(call('propose_document_edits', { edits: [{ id: 'edit', operation: 'replace',
+        target: { kind: 'selection' }, content_markdown: 'changed', explanation: '调整', citation_ids: [] }] }, false));
+    const output = await h.runtime.runWorker(h.input);
+    expect(output.result).toMatchObject({ kind: 'edits', edits: [{ citation_ids: [] }] });
+    expect(output.citations.some((citation) => citation.kind === 'current_document')).toBe(true);
+    expect(output.evidence.some(([, content]) => content.includes('first'))).toBe(true);
+  });
+
   test("retrieved documents can be paged, but unseen IDs and changed versions cannot be read", async () => {
     const h = harness();
     h.input.role = "researcher";
@@ -653,5 +702,53 @@ describe("isolated document agent runtime", () => {
     h.input.dependencies = { a: dependency };
     await expect(h.runtime.runWorker(h.input)).rejects.toThrow("没有成功回答");
     expect(h.llm.agentTurn).not.toHaveBeenCalled();
+  });
+
+  test('research writing allows three searches and intervening reads but still submits a bounded handoff', async () => {
+    const h = harness();
+    h.input.role = 'researcher'; h.input.step!.capability = 'search';
+    h.input.environment.researchManaged = true;
+    h.input.environment.features = { research_writing: true };
+    h.input.environment.step_turn_limit = 8;
+    h.input.environment.research_brief = { goal: '研究原理', audience: '', deliverable: '文章', constraints: [], unknowns: [], preferred_sources: [],
+      questions: [{ id: 'q1', text: '原理', section_ids: ['s1'] }], sections: [{ id: 's1', title: '原理', question_ids: ['q1'] }] };
+    h.input.environment.request.knowledge_scope = { private: true, public: false, team: false, document_ids: [] };
+    let searches = 0;
+    h.retrieval.searchWithTrace.mockImplementation(async () => ({ citations: [{ citation_id: `chunk${++searches}`, doc_id: 'source', title: 'Source', document_version: 1, content: `fact ${searches}` }] }));
+    h.documents.getAccessible.mockResolvedValue({ doc_id: 'source', title: 'Source', document_version: 1, content: 'full fact' });
+    h.llm.agentTurn.mockImplementation(async (messages: any[]) => {
+      const calls = messages.flatMap(m => m.tool_calls ?? []), count = calls.filter(c => c.function.name === 'search_knowledge_base').length;
+      const reads = calls.filter(c => c.function.name === 'read_knowledge_document').length;
+      if (count < 3 && count === reads) return call('search_knowledge_base', { query: `query${count}`, question_id: 'q1', gap_reason: '核实尚未解决的问题' });
+      if (reads < count) return call('read_knowledge_document', { doc_id: 'source' });
+      return call('finish_answer', { answer: '事实已整理', citation_ids: ['kb-chunk1', 'kb-chunk2', 'kb-chunk3'],
+        research_notes: [{ question_id: 'q1', findings: [{ statement: '事实已整理', evidence_ids: ['kb-chunk1'] }], missing: [], conflicts: [] }] });
+    });
+    const output = await h.runtime.runWorker(h.input);
+    expect(h.retrieval.searchWithTrace).toHaveBeenCalledTimes(3);
+    expect(h.llm.agentTurn).toHaveBeenCalledTimes(7);
+    expect(output.research_progress).toMatchObject({ searches: 3, stop_reason: 'search_limit' });
+    expect(output.research_notes?.[0]?.question_id).toBe('q1');
+    expect((h.llm.agentTurn.mock.calls.at(-1)![1] as any[]).some(tool => tool.function.name === 'search_knowledge_base')).toBe(false);
+  });
+
+  test('web snapshots preserve the tail independently of observed excerpts and page back through the same authorized source', async () => {
+    const h = harness(); h.input.role = 'researcher'; h.input.step!.capability = 'search';
+    h.input.environment.request.allow_web = true; h.input.environment.personal.web_key = 'test-key';
+    h.input.environment.features = { research_writing: true, context: true };
+    const raw = 'background '.repeat(900) + 'concurrency ANSWER_AT_TAIL';
+    (h.tools as any).settings.webCall = async () => [{ url: 'https://example.com/article', title: 'article', content: raw.slice(0, 5000), raw_content: raw }];
+    const state: import('../src/ai/agent-runtime.types.js').WorkerState = { citations: new Map(), evidence: new Map(), observations: [],
+      readRegions: new Set(), selectionRead: false, wikiReads: [], wikiChecks: [], wikiFallbacks: [] };
+    const result: any = await h.tools.execute(h.input, state, 'personal_tavily_search', { query: 'concurrency' }, 'web');
+    const id = result.results[0].citation_id;
+    expect(result.results[0].content).toContain('ANSWER_AT_TAIL');
+    expect(result.results[0]).not.toHaveProperty('raw_content');
+    expect(state.web_snapshots?.get(id)?.content).toBe(raw);
+    expect(state.evidence.get(id)!.length).toBeLessThan(raw.length);
+    const page: any = await h.tools.execute(h.input, state, 'read_task_evidence', { citation_id: id, offset: 5000, limit: 1000 }, 'page');
+    expect(page.content).toBe(raw.slice(5000, 6000));
+    h.input.environment.request.allow_web = false;
+    await expect(h.tools.execute(h.input, state, 'read_task_evidence', { citation_id: id }, 'revoked')).rejects.toThrow(ForbiddenException);
   });
 });

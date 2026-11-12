@@ -1,6 +1,8 @@
 import { describe, test, expect, jest } from "@jest/globals";
 import { AppConfig } from "../src/config/app-config.js";
 import { LlmService } from "../src/ai/llm.service.js";
+import { AgentSettingsService } from "../src/ai/agent-settings.service.js";
+import { AgentExecutionError } from "../src/ai/agent-execution.js";
 describe("agent model configuration", () => {
   test("upstream HTTP failures carry a retry classification without exposing provider response bodies", async () => {
     const config = new AppConfig();
@@ -15,11 +17,22 @@ describe("agent model configuration", () => {
       expect(cancel).toHaveBeenCalledTimes(1);
     } finally { mock.mockRestore(); }
   });
+  test('reports an upstream configuration rejection without calling it a timeout', async () => {
+    const settings = new AgentSettingsService({ metadataEnabled: false } as any, new AppConfig(), {
+      verifyThinking: async () => { throw new AgentExecutionError('UPSTREAM_HTTP_ERROR', '模型服务请求失败（400）'); },
+    } as any);
+    const context = { user_id: 'test', space_id: 'test', team_ids: [] };
+    await expect(settings.validateAndSave(context, {
+      feature: 'thinking', enabled: true, expected_revision: 0, preset: 'qwen',
+    })).rejects.toThrow('模型服务拒绝该配置（400）');
+    expect((await settings.get(context)).revision).toBe(0);
+  });
   test("thinking changes the actual main-model payload and stays off for the critic", async () => {
     const config = new AppConfig();
     Object.defineProperties(config, {
       llmApiKey: { value: "test" },
       llmModel: { value: "main" },
+      llmToolCallExtraBody: { value: { temperature: 1 } },
       agentCriticModel: { value: "critic" },
       thinkingSupported: { value: true },
       thinkingOnBody: { value: { enable_thinking: true } },
@@ -57,7 +70,7 @@ describe("agent model configuration", () => {
       await llm.agentTurn([{ role: "user", content: "handoff" }],
         [{ type: 'function', function: { name: 'finish_answer', description: 'answer', parameters: { type: 'object' } } }],
         undefined, { thinking: true, toolChoice: "finish_answer" });
-      expect(bodies[0]).toMatchObject({ model: "main", enable_thinking: true, tool_choice: 'auto' });
+      expect(bodies[0]).toMatchObject({ model: "main", enable_thinking: true, temperature: 1, tool_choice: 'auto' });
       expect(bodies[1]).toMatchObject({
         model: "critic",
         enable_thinking: false,

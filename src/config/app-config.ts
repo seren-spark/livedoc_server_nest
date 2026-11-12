@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { ModelRouter } from '../ai/model-routing.js';
 
 const configDir = dirname(fileURLToPath(import.meta.url));
 function findProjectRoot(start: string): string {
@@ -113,6 +114,10 @@ export class AppConfig {
   readonly summarySafetyRatio = Number(process.env.SUMMARY_SAFETY_RATIO ?? 0.15);
   readonly summaryMapInputTokens = Number(process.env.SUMMARY_MAP_INPUT_TOKENS ?? 6000);
   readonly llmToolCallExtraBody = jsonObjectEnv('LLM_TOOL_CALL_EXTRA_BODY');
+  readonly llmModelProfiles = jsonObjectEnv('LLM_MODEL_PROFILES');
+  readonly agentModelRoutes = jsonObjectEnv('AGENT_MODEL_ROUTES');
+  readonly llmCircuitFailureThreshold = Number(process.env.LLM_CIRCUIT_FAILURE_THRESHOLD ?? 3);
+  readonly llmCircuitCooldownMs = Number(process.env.LLM_CIRCUIT_COOLDOWN_MS ?? 30000);
   readonly documentAgentEnabled = boolEnv('DOCUMENT_AGENT_ENABLED', true);
   readonly workspaceEnabled = boolEnv('WORKSPACE_ENABLED', true);
   readonly mcpEnabled = boolEnv('MCP_ENABLED', false);
@@ -142,6 +147,7 @@ export class AppConfig {
   readonly shortMemoryTokenBudget = Number(
     process.env.SHORT_MEMORY_TOKEN_BUDGET ?? 4000,
   );
+  readonly conversationConstraintsEnabled = boolEnv('CONVERSATION_CONSTRAINTS_ENABLED', this.runtimeMode !== 'test');
   readonly memoryTtlDays = Number(process.env.MEMORY_TTL_DAYS ?? 30);
   readonly documentMemoryEnabled = boolEnv('DOCUMENT_MEMORY_ENABLED', true);
   readonly documentMemoryTokenBudget = Number(
@@ -202,6 +208,7 @@ export class AppConfig {
       llm_model: this.llmModel,
       llm_tool_call_extra_body: this.llmToolCallExtraBody,
       llm_base_url: this.llmBaseUrl,
+      model_routing_fingerprint: new ModelRouter(this).fingerprint(),
       context_token_budget: this.contextTokenBudget,
       context_per_citation_tokens: this.contextPerCitationTokens,
       tokenizer_encoding: this.tokenizerEncoding,
@@ -219,6 +226,10 @@ export class AppConfig {
       docling_num_threads: this.doclingNumThreads,
     });
     return createHash('sha256').update(payload).digest('hex').slice(0, 16);
+  }
+
+  get agentGraphVersion(): 'v1' | 'v2' {
+    return process.env.AGENT_GRAPH_VERSION === 'v1' ? 'v1' : 'v2';
   }
 
   productionMisconfigurations(): string[] {
@@ -241,8 +252,8 @@ export class AppConfig {
       AGENT_MAX_MODEL_REQUESTS: Number.isInteger(this.agentMaxModelRequests) && this.agentMaxModelRequests >= 3,
       AGENT_FINALIZATION_TOKENS: Number.isInteger(this.agentFinalizationTokens) && this.agentFinalizationTokens >= 0 && this.agentFinalizationTokens < this.agentMaxTotalTokens,
       AGENT_MAX_CONCURRENT_RUNS: Number.isInteger(this.agentMaxConcurrentRuns) && this.agentMaxConcurrentRuns > 0,
-      LLM_API_KEY: Boolean(this.llmApiKey),
-      LLM_MODEL: Boolean(this.llmModel),
+      LLM_API_KEY: new ModelRouter(this).configured(),
+      LLM_MODEL: Boolean(new ModelRouter(this).mainModel()),
       DATABASE_URL: Boolean(this.databaseUrl),
       STORAGE_PROVIDER: this.storageProvider === 'local',
       STORAGE_LOCAL_ROOT: Boolean(this.storageLocalRoot),
@@ -294,8 +305,9 @@ export class AppConfig {
       rerank_model: this.rerankModel,
       agent_tool_selection: this.agentToolSelection,
       llm_provider: this.llmProvider,
-      llm_model: this.llmModel || null,
-      llm_configured: Boolean(this.llmApiKey),
+      llm_model: new ModelRouter(this).mainModel() || null,
+      llm_configured: new ModelRouter(this).configured(),
+      model_profile_names: Object.keys(this.llmModelProfiles),
       llm_tool_call_extra_body_keys: Object.keys(this.llmToolCallExtraBody).sort(),
       storage_provider: this.storageProvider,
       storage_local_root: resolve(this.projectRoot, this.storageLocalRoot),

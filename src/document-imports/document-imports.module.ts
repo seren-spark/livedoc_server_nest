@@ -1,3 +1,4 @@
+import { MemoryModule } from '../ai/memory.module.js';
 import { forwardRef, Module } from '@nestjs/common';
 import { DocumentsModule } from '../documents/documents.module.js';
 import { IndexingModule } from '../indexing/indexing.module.js';
@@ -9,7 +10,7 @@ import { VisionService } from './vision.service.js';
 import { AssetsController } from '../documents/assets/assets.controller.js';
 
 @Module({
-  imports: [forwardRef(()=>DocumentsModule), IndexingModule],
+  imports: [forwardRef(()=>DocumentsModule), IndexingModule, MemoryModule],
   controllers: [DocumentImportsController, AssetsController],
   providers: [DocumentImportsService, DoclingParserService, VisionService, ImportWorkerService],
   exports: [DocumentImportsService, ImportWorkerService],

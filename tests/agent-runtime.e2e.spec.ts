@@ -16,6 +16,7 @@ import { LlmService } from "../src/ai/llm.service.js";
 import { AgentRuntimeService } from "../src/ai/agent-runtime.service.js";
 import { DocumentAgentService } from "../src/ai/document-agent.service.js";
 import { AgentAuditService } from "../src/ai/agent-audit.service.js";
+import { AuthService } from '../src/auth/auth.service.js';
 import { ConversationMemoryService } from "../src/ai/memory.service.js";
 import { RetrievalService } from "../src/retrieval/retrieval.service.js";
 import { DocumentsService } from "../src/documents/documents.service.js";
@@ -96,6 +97,26 @@ describe("worker runtime through existing document-agent entry", () => {
       "verbose",
       "fatal",
     ]);
+  });
+
+  test('serves scoped agent metrics through the authenticated HTTP entry point', async () => {
+    const audit = app.get(AgentAuditService);
+    const owner = await app.get(AuthService).identityByUserId('user_alice');
+    expect(owner).toBeTruthy();
+    const id = 'metrics-http';
+    audit.runs.set(id, { run_id: id, request_id: id, ...owner!, conversation_id: 'metrics',
+      mode: 'agent', status: 'completed', created_at: new Date(),
+      payload: { duration_ms: 15, delivery: { result: { kind: 'answer' } }, usage: { model_requests: 1 },
+        query: 'private metrics source text' } });
+    try {
+      await api.get('/ai/agent/metrics').expect(401);
+      const own = await api.get('/ai/agent/metrics').set('Authorization', `Bearer ${alice}`).expect(200);
+      const other = await api.get('/ai/agent/metrics').set('Authorization', `Bearer ${bob}`).expect(200);
+      expect(own.body).toMatchObject({ run_count: 1, delivered_runs: 1, model_requests: 1 });
+      expect(other.body.run_count).toBe(0);
+      expect(JSON.stringify(own.body)).not.toContain('private metrics source text');
+      await api.get('/ai/agent/metrics?window=all').set('Authorization', `Bearer ${alice}`).expect(400);
+    } finally { audit.runs.delete(id); }
   });
 
   test.each(["invalid", "unchanged", "valid", "unavailable"])("reflection %s never releases a known rejected original", async scenario => {

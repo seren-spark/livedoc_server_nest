@@ -7,6 +7,8 @@ import { estimateTokens } from "../retrieval/chunker.js";
 
 @Injectable()
 export class EmbeddingService {
+  // ponytail: process-local 1024-entry reuse. Persistent reuse can follow measured cold-start costs.
+  private readonly vectors = new Map<string, Promise<number[]>>();
   //依赖配置和推理 Worker。
   constructor(
     private readonly config: AppConfig,
@@ -34,11 +36,45 @@ export class EmbeddingService {
   async embedBatch(texts: string[]): Promise<number[][]> {
     //默认 embeddingProvider = 'hash' 。也就是说， 如果不配置环境变量，Dense 向量不是真模型生成的，而是 hashEmbedding 生成的伪向量 。这是本地开发无 GPU 时的回退方案。
     if (this.config.embeddingProvider === "transformers")
-      return this.worker.embed(texts);
+      return this.embedCached(texts);
     if (this.config.runtimeMode === 'real') {
       throw new Error(`Real RAG mode forbids embedding provider '${this.config.embeddingProvider}'`);
     }
     return texts.map((text) => hashEmbedding(text, this.config.embeddingDim));
+  }
+
+  private async embedCached(texts: string[]): Promise<number[][]> {
+    const keys = texts.map((text) => createHash('sha256').update(JSON.stringify([
+      this.config.embeddingProvider, this.config.embeddingModel, this.config.embeddingDim,
+      this.config.modelDtype, text,
+    ])).digest('hex'));
+    const requested = new Map<string, Promise<number[]>>();
+    const missing = new Map<string, string>();
+    for (const [index, key] of keys.entries()) {
+      const cached = this.vectors.get(key);
+      if (cached) {
+        this.vectors.delete(key);
+        this.vectors.set(key, cached);
+        requested.set(key, cached);
+      } else missing.set(key, texts[index]!);
+    }
+    if (missing.size) {
+      const batch = this.worker.embed([...missing.values()]).then((rows) => {
+        if (rows.length !== missing.size || rows.some((row) => row.length !== this.dim ||
+          row.some((value) => !Number.isFinite(value)))) throw new Error('Embedding returned invalid vectors');
+        return rows;
+      });
+      for (const [index, key] of [...missing.keys()].entries()) {
+        const vector: Promise<number[]> = batch.then((rows) => [...rows[index]!]).catch((error) => {
+          if (this.vectors.get(key) === vector) this.vectors.delete(key);
+          throw error;
+        });
+        this.vectors.set(key, vector);
+        requested.set(key, vector);
+        if (this.vectors.size > 1024) this.vectors.delete(this.vectors.keys().next().value!);
+      }
+    }
+    return Promise.all(keys.map(async (key) => [...await requested.get(key)!]));
   }
 
   async countTokens(texts: string[]): Promise<number[]> {

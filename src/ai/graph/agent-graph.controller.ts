@@ -61,6 +61,10 @@ export class AgentGraphController {
   @Get(":id") get(@Param("id") id: string, @CurrentAccess() c: AccessContext) {
     return this.service.get(id, c);
   }
+  @Get(':id/research') research(@Param('id') id: string, @CurrentAccess() c: AccessContext,
+    @Query('question_id') question?: string, @Query('offset') offset?: string, @Query('limit') limit?: string) {
+    return this.service.research(id, c, question, Number(offset ?? 0), Number(limit ?? 10));
+  }
   @Post(":id/pause") @HttpCode(200) pause(
     @Param("id") id: string,
     @Body() input: GraphControlDto,
@@ -114,7 +118,7 @@ export class AgentGraphController {
         const batch = await this.service.repository.events(id, last);
         if (
           batch.some((event) =>
-            ["plan", "waiting_input", "step", "reflection"].includes(
+            ["plan", "waiting_input", "step", "reflection", 'research_brief', 'research_progress', 'research_section', 'research_coverage'].includes(
               event.event,
             ),
           )

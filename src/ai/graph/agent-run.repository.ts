@@ -14,6 +14,8 @@ import type { DocumentAgentDto } from "../document-agent.dto.js";
 import type { AgentRunRecord } from "../agent-audit.service.js";
 import { emptyUsage, type AgentUsage } from "../agent-runtime.types.js";
 import { AgentExecutionError } from "../agent-execution.js";
+import { graphFingerprint, V2_POLICY, RESEARCH_POLICY } from './graph-policy.js';
+import type { WritingSkillSnapshot } from '../writing-skills.types.js';
 
 export const GRAPH_TERMINAL = [
   "awaiting_review",
@@ -121,7 +123,7 @@ export class AgentRunRepository {
     return rows.map(row);
   }
 
-  async create(request: DocumentAgentDto, context: AccessContext) {
+  async create(request: DocumentAgentDto, context: AccessContext, skill?: WritingSkillSnapshot) {
     this.assertEnabled();
     return this.db.transaction(async (manager) => {
       const [existing] = await manager.query(
@@ -161,8 +163,10 @@ export class AgentRunRepository {
         output_target: request.output_target,
         feedback: {},
         traces: [],
-        workflow_version: "v1",
-        config_fingerprint: this.config.configFingerprint,
+        workflow_version: this.config.agentGraphVersion,
+        ...(this.config.agentGraphVersion === 'v2' ? { policy: skill?.skill.workflow === 'research_writing' ? RESEARCH_POLICY : V2_POLICY } : {}),
+        config_fingerprint: graphFingerprint(this.config.configFingerprint, this.config.agentGraphVersion,
+          this.config.agentGraphVersion === 'v2' ? skill?.skill.workflow === 'research_writing' ? RESEARCH_POLICY : V2_POLICY : undefined),
         limits: {
           total_tokens: this.config.agentMaxTotalTokens,
           model_requests: this.config.agentMaxModelRequests,
@@ -176,7 +180,7 @@ export class AgentRunRepository {
       );
       await manager.query(
         `INSERT INTO agent_runs(run_id,request_id,user_id,space_id,conversation_id,mode,status,payload,graph_version,budget,control,resumable_until)
-        VALUES(?,?,?,?,?,?,'queued',?,'v1',?,'{}',?) ON DUPLICATE KEY UPDATE run_id=run_id`,
+        VALUES(?,?,?,?,?,?,'queued',?,?,?,'{}',?) ON DUPLICATE KEY UPDATE run_id=run_id`,
         [
           id,
           request.request_id,
@@ -185,6 +189,7 @@ export class AgentRunRepository {
           request.conversation_id,
           request.mode,
           JSON.stringify(payload),
+          this.config.agentGraphVersion,
           JSON.stringify(emptyUsage()),
           until,
         ],
@@ -201,6 +206,10 @@ export class AgentRunRepository {
       await manager.query(
         "INSERT INTO agent_run_artifacts(run_id,artifact_key,payload) VALUES(?,?,?)",
         [id, "input", JSON.stringify(request)],
+      );
+      if (skill) await manager.query(
+        'INSERT INTO agent_run_artifacts(run_id,artifact_key,payload) VALUES(?,?,?)',
+        [id, 'selected_skill', JSON.stringify(skill)],
       );
       const [created] = await manager.query(
         "SELECT * FROM agent_runs WHERE run_id=?",
@@ -237,7 +246,7 @@ export class AgentRunRepository {
       if (Number(count.total) >= this.config.agentMaxConcurrentRuns)
         return null;
       const [next] =
-        await manager.query(`SELECT r.* FROM agent_runs r WHERE r.graph_version='v1' AND r.status='queued'
+        await manager.query(`SELECT r.* FROM agent_runs r WHERE r.graph_version IN ('v1','v2') AND r.status='queued'
         AND NOT EXISTS(SELECT 1 FROM agent_runs a WHERE a.user_id=r.user_id AND a.space_id=r.space_id AND a.status='running')
         ORDER BY r.created_at LIMIT 1 FOR UPDATE SKIP LOCKED`);
       if (!next) return null;
@@ -271,6 +280,11 @@ export class AgentRunRepository {
     );
     if (!record) throw new ConflictException("恢复资料已失效，请重新创建任务");
     return json(record.payload);
+  }
+
+  async optionalArtifact<T>(id: string, key: string): Promise<T | null> {
+    const [record] = await this.db.query<any>('SELECT payload FROM agent_run_artifacts WHERE run_id=? AND artifact_key=?', [id, key]);
+    return record ? json(record.payload) : null;
   }
 
   async saveArtifact(

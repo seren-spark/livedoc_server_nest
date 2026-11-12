@@ -1,5 +1,6 @@
 import {
   beforeAll,
+  beforeEach,
   afterAll,
   afterEach,
   describe,
@@ -171,6 +172,9 @@ suite("LangGraph through real MySQL and HTTP", () => {
       )
     )
       throw new Error("Wrong test database");
+  }, 120000);
+  beforeEach(async () => {
+    // Each scenario owns its runs, so prior scenarios do not consume its admission quota.
     const db = app.get(DatabaseService);
     for (const table of [
       "agent_run_events",
@@ -181,7 +185,7 @@ suite("LangGraph through real MySQL and HTTP", () => {
       "agent_runs",
     ])
       await db.query(`DELETE FROM ${table}`);
-  }, 120000);
+  }, 30000);
   afterEach(() => {
     jest.restoreAllMocks();
     jest
@@ -234,6 +238,29 @@ suite("LangGraph through real MySQL and HTTP", () => {
       .send(body);
     return { response, body };
   };
+
+  test('claims both persisted workflow versions from the same queue', async () => {
+    const previous = process.env.AGENT_GRAPH_VERSION;
+    try {
+      process.env.AGENT_GRAPH_VERSION = 'v1';
+      const legacy = await create('ask');
+      process.env.AGENT_GRAPH_VERSION = 'v2';
+      const current = await create('ask');
+      const first = await repo.claim();
+      expect(first?.run_id).toBe(legacy.id);
+      expect(first?.graph_version).toBe('v1');
+      await repo.finish(first!.run_id, first!.execution_generation, 'paused', 0, {});
+      const second = await repo.claim();
+      expect(second?.run_id).toBe(current.id);
+      expect(second?.graph_version).toBe('v2');
+      expect(second?.payload.policy.version).toBe('agent-v2-policy-1');
+      expect(second?.payload.config_fingerprint).not.toBe(first?.payload.config_fingerprint);
+      await repo.finish(second!.run_id, second!.execution_generation, 'paused', 0, {});
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_GRAPH_VERSION;
+      else process.env.AGENT_GRAPH_VERSION = previous;
+    }
+  });
 
   test("plan confirmation keeps run id, survives restart, authorizes execution and deduplicates commands", async () => {
     const spy = jest

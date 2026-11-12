@@ -1,4 +1,4 @@
-import { describe, expect, test } from "@jest/globals";
+import { describe, expect, test, jest } from "@jest/globals";
 import { isPublicAddress, htmlToMarkdown } from "../src/ai/public-web-fetch.js";
 import {
   validateAgentRequest,
@@ -6,9 +6,23 @@ import {
   validatePlan,
   selectAgentCitations,
 } from "../src/ai/document-agent.validation.js";
-import { ruleRoute } from "../src/ai/document-agent.service.js";
+import { DocumentAgentService, ruleRoute } from "../src/ai/document-agent.service.js";
 import { request } from "./fixtures/agent-request.js";
 describe("agent permissions and execution contracts", () => {
+  test.each([undefined, 'v1'])('reflection preserves the workflow status owner %s', async (workflow) => {
+    const audit = { update: jest.fn<any>().mockResolvedValue(undefined) };
+    const service = { audit, runtime: { turn: async () => ({ content: '{"passed":true,"issues":[]}' }) } };
+    const run = { status: 'running', payload: { workflow_version: workflow } };
+    const input = { ...request('ask'), deep_thinking: true };
+    const result = await DocumentAgentService.prototype.reviewCandidate.call(service as any,
+      { kind: 'answer', answer: 'answer', citation_ids: [] },
+      { request: input, signal: new AbortController().signal, emit: () => {} } as any,
+      {}, undefined, new Map(), new Map(), run as any);
+    expect(result.revised).toBe(false);
+    expect(run.status).toBe(workflow ? 'running' : 'reflecting');
+    expect(audit.update).toHaveBeenCalledTimes(workflow ? 0 : 1);
+    expect(run.payload).toHaveProperty('reflection.status', 'passed');
+  });
   test("publishes only adopted citations, preserving declared order and edit unions", () => {
     const available = new Map(['a', 'b', 'c'].map((id) => [id, { id, title: id, kind: 'text' as const }]));
     expect(selectAgentCitations({ kind: 'answer', answer: 'fact [b]', citation_ids: ['b', 'b', 'a'] }, available)

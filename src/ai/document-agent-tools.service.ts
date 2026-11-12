@@ -11,6 +11,7 @@ import {
   type WikiCoverageResult,
 } from "../wiki/wiki.types.js";
 import { createHash } from "node:crypto";
+import { sourceExcerpts, contentHash, isResearchSearch } from './research-writing.js';
 import { getEncoding } from "js-tiktoken";
 import { AppConfig } from "../config/app-config.js";
 import { DocumentsService } from "../documents/documents.service.js";
@@ -89,6 +90,8 @@ function tool(
   };
 }
 export const DOCUMENT_AGENT_TOOLS: FunctionTool[] = [
+  tool('read_research_notes', '按问题分页读取本任务成功依赖交付的研究明细，精确事实通过read_task_evidence核实原文。',
+    { question_id: str, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20 } }, ['question_id']),
   tool(
     "read_current_document",
     "按区域读取当前快照；selection=true 精确读取选区。空 region_ids 按 offset 分页。超大块自动返回片段，用 region_ids=[该块id] 和 content_offset=next_content_offset 继续；全部片段读完才算已读整块。",
@@ -121,6 +124,12 @@ export const DOCUMENT_AGENT_TOOLS: FunctionTool[] = [
       limit: { type: "integer", minimum: 1, maximum: 16000 },
     },
     ["doc_id"],
+  ),
+  tool(
+    'read_task_evidence',
+    '按来源标识分页取回本任务已观察或成功依赖已采用的原证据。offset相对该证据片段，返回next_offset。修改正文仍需亲自读取目标区域或选区。',
+    { citation_id: str, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 16000 } },
+    ['citation_id'],
   ),
   tool(
     "search_knowledge_base",
@@ -234,6 +243,8 @@ export class DocumentAgentToolsService {
         "read_current_document",
         "read_reference",
         "read_knowledge_document",
+        'read_task_evidence',
+        'read_research_notes',
         "finish_answer",
         "request_clarification",
       ].includes(name)
@@ -255,6 +266,8 @@ export class DocumentAgentToolsService {
     const keywords = request.query + (step?.description ?? "");
     return DOCUMENT_AGENT_TOOLS.filter((t) => {
       const name = t.function.name;
+      if (name === 'read_research_notes') return Boolean(input.environment.features?.research_writing);
+      if (name === 'read_task_evidence') return Boolean(input.environment.features?.context);
       if (
         input.environment.researchManaged &&
         input.role === "primary" &&
@@ -313,6 +326,8 @@ export class DocumentAgentToolsService {
       )
       .filter(
         (t) =>
+          (!input.base.skill_snapshot || ['finish_answer', 'request_clarification'].includes(t.function.name) ||
+            input.base.skill_snapshot.skill.allowed_tools.includes(t.function.name)) &&
           this.roleAllows(input.role, t.function.name) &&
           !(
             input.environment.researchManaged &&
@@ -364,7 +379,23 @@ export class DocumentAgentToolsService {
                 },
               }
             : t,
-      );
+      ).map(t => {
+        if (!input.environment.features?.research_writing) return t;
+        const schema = structuredClone(t);
+        if (isResearchSearch(schema.function.name)) {
+          Object.assign(schema.function.parameters.properties, { question_id: { type: 'string', minLength: 1, maxLength: 160 }, gap_reason: { type: 'string', minLength: 1, maxLength: 2000 } });
+          schema.function.parameters.required = [...schema.function.parameters.required, 'question_id', 'gap_reason'];
+        }
+        if (step && schema.function.name === 'finish_answer') {
+          schema.function.parameters.properties.research_notes = { type: 'array', maxItems: 20, items: {
+            type: 'object', additionalProperties: false, required: ['question_id', 'findings', 'missing', 'conflicts'],
+            properties: { question_id: str, findings: { ...workerHandoffSchema.properties.findings, maxItems: 40 },
+              missing: { ...workerHandoffSchema.properties.missing, maxItems: 30 }, conflicts: { ...workerHandoffSchema.properties.conflicts, maxItems: 20 } },
+          } };
+          if (input.role === 'researcher') schema.function.parameters.required.push('research_notes');
+        }
+        return schema;
+      });
   }
 
   async execute(
@@ -379,6 +410,14 @@ export class DocumentAgentToolsService {
     if (!this.allowedTools(input, true).some((t) => t.function.name === name))
       throw new ForbiddenException("工具未加载或当前模式无权限");
     const { citations, evidence, readRegions } = state;
+    if (name === 'read_research_notes') {
+      const notes = Object.values(input.dependencies).flatMap(output => output.research_notes ?? []).filter(note => note.question_id === args.question_id);
+      const offset = args.offset ?? 0, limit = args.limit ?? 10;
+      if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 20)
+        throw new Error('研究明细分页参数无效');
+      return { question_id: args.question_id, notes: notes.slice(offset, offset + limit), total: notes.length,
+        next_offset: offset + limit < notes.length ? offset + limit : null };
+    }
     const observe = (id: string, content: string) => {
       signal.throwIfAborted();
       if (
@@ -482,6 +521,7 @@ export class DocumentAgentToolsService {
           doc_id: ref.doc_id,
           import_id: ref.import_id,
           version,
+          ...(ref.kind === 'document' ? {} : { snapshot_hash: createHash('sha256').update(content).digest('hex') }),
         },
         offset,
         limit,
@@ -643,6 +683,47 @@ export class DocumentAgentToolsService {
           args.offset ?? 0,
           args.limit ?? 5000,
         );
+      if (name === 'read_task_evidence') {
+        const citation = citations.get(args.citation_id);
+        const snapshot = state.web_snapshots?.get(args.citation_id);
+        const content = snapshot?.content ?? evidence.get(args.citation_id);
+        if (!citation || content === undefined)
+          throw new ForbiddenException('仅可取回本任务已观察或授权依赖采用的证据');
+        if (citation.kind === 'web' && !request.allow_web)
+          throw new ForbiddenException('当前任务未授权联网资料');
+        if (citation.doc_id) {
+          const document = await this.documents.getAccessible(citation.doc_id, context);
+          if (citation.kind !== 'current_document' && citation.version !== undefined && citation.version !== document.document_version)
+            throw new ConflictException('证据来源版本已变更，请重新检索');
+        }
+        if (citation.import_id) {
+          const imported = await this.imports.require(citation.import_id);
+          this.imports.assertOwner(imported, context);
+          if (imported.document_id) await this.documents.getAccessible(imported.document_id, context);
+          if (citation.kind === 'import' && citation.snapshot_hash &&
+            citation.snapshot_hash !== createHash('sha256').update(imported.parsed_content ?? '').digest('hex'))
+            throw new ConflictException('导入资料内容已变更，请重新读取');
+        }
+        if (citation.reference_id && !request.references.some((reference) => reference.id === citation.reference_id))
+          throw new ForbiddenException('参考资料不属于当前任务');
+        if (citation.kind === 'current_document' && citation.snapshot_hash !== request.editor_snapshot.hash)
+          throw new ConflictException('当前文档证据快照不匹配');
+        await this.wiki?.validateProofs(state.wikiReads, context);
+        const offset = args.offset ?? 0, limit = args.limit ?? 4000;
+        if (!Number.isSafeInteger(offset) || offset < 0 || offset > content.length ||
+          !Number.isSafeInteger(limit) || limit < 1 || limit > 16000)
+          throw new Error('证据分页参数无效');
+        if (offset > 0 && /[\uDC00-\uDFFF]/u.test(content[offset] ?? '') && /[\uD800-\uDBFF]/u.test(content[offset - 1] ?? ''))
+          throw new Error('分页位置位于字符中间，请使用next_offset');
+        const page = pageText(content, offset, limit);
+        if (!page && offset < content.length) throw new Error('证据读取预算不足');
+        if (snapshot) observe(citation.id, page);
+        return { citation_id: citation.id, content: page, offset, total_length: content.length,
+          next_offset: offset + page.length < content.length ? offset + page.length : null,
+          version: citation.version, snapshot_hash: citation.snapshot_hash, evidence_kind: citation.evidence_kind,
+          source_start_offset: citation.start_offset === undefined ? undefined : citation.start_offset + offset,
+          source_end_offset: citation.start_offset === undefined ? undefined : citation.start_offset + offset + page.length };
+      }
       if (name === "read_knowledge_document") {
         const known = [...citations.values()].filter(
           (c) => c.kind === "document" && c.doc_id === args.doc_id,
@@ -776,31 +857,42 @@ export class DocumentAgentToolsService {
           args,
           personal.web_key,
           signal,
+          input.environment.features?.research_writing === true,
         );
         return {
           results: results.map(
-            (r: { title: string; url: string; content: string }, i: number) => {
+            (r: { title: string; url: string; content: string; raw_content?: string }, i: number) => {
+              const research = input.environment.features?.research_writing;
+              const raw = r.raw_content ?? (name === 'personal_tavily_extract' ? r.content : undefined);
+              const excerpts = research && raw ? sourceExcerpts(raw, `${request.query}\n${args.gap_reason ?? ''}\n${args.query ?? ''}`, Math.max(1000, Math.floor(5000 / results.length))) : undefined;
+              const content = excerpts ? excerpts.map(e => e.text).join('\n\n') : r.content;
               const citation_id = addCitation({
                 id: `web-${callId}-${i}`,
                 title: r.title,
                 kind: "web",
                 url: r.url,
-                source_content: r.content,
-                snippet: r.content?.slice(0, 200),
+                source_content: content,
+                snippet: content?.slice(0, 200),
+                ...(raw && research ? { snapshot_hash: contentHash(raw) } : {}),
                 evidence_kind:
-                  name === "personal_tavily_extract" && r.content
+                  (name === "personal_tavily_extract" || research && raw) && content
                     ? "source"
                     : "search_summary",
               });
-              observe(citation_id, r.content);
-              return { ...r, citation_id };
+              observe(citation_id, content);
+              if (raw && research) {
+                state.web_snapshots ??= new Map();
+                state.web_snapshots.set(citation_id, { content: raw, hash: contentHash(raw), fetched_at: new Date().toISOString(), complete: true });
+              }
+              return { title: r.title, url: r.url, content, citation_id, ...(excerpts ? { excerpts, total_length: raw!.length, read_tool: 'read_task_evidence' } : {}) };
             },
           ),
         };
       }
       if (name.startsWith("mcp__")) {
         if (!request.allow_web) throw new ForbiddenException("联网资料未启用");
-        const text = await this.mcp.call(name, args, signal);
+        const { question_id: _question, gap_reason: _gap, ...researchArgs } = args;
+        const text = await this.mcp.call(name, input.environment.features?.research_writing ? researchArgs : args, signal);
         const urls = new Set<string>(
           [...text.matchAll(/https?:\/\/[^\s"<>\\]+/g)].map((m) => m[0]),
         );

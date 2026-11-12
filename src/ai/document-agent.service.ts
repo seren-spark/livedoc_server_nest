@@ -1,3 +1,8 @@
+import { ConversationConstraintsService, agentMemoryDocumentId, type ConstraintTurn } from './conversation-constraints.service.js';
+import { WritingSkillsService } from './writing-skills.service.js';
+import type { WritingSkillSnapshot } from './writing-skills.types.js';
+import { WritingPreferencesService } from './writing-preferences.service.js';
+import type { PreferenceSnapshot } from './writing-preferences.types.js';
 import { AgentRuntimeService } from "./agent-runtime.service.js";
 import { AgentSupervisorService } from "./agent-supervisor.service.js";
 import {
@@ -138,6 +143,9 @@ export class DocumentAgentService {
     private readonly runtime: AgentRuntimeService,
     private readonly supervisor: AgentSupervisorService,
     private readonly wiki: WikiService,
+    private readonly constraints?: ConversationConstraintsService,
+    private readonly skills?: WritingSkillsService,
+    private readonly preferences?: WritingPreferencesService,
   ) {}
 
   async capabilities(context?: AccessContext) {
@@ -149,6 +157,9 @@ export class DocumentAgentService {
     return {
       enabled: this.config.documentAgentEnabled,
       graph_enabled: this.config.agentGraphEnabled,
+      skills_enabled: this.config.agentGraphEnabled && this.config.agentGraphVersion === 'v2',
+      research_writing_available: this.config.agentGraphEnabled && this.config.agentGraphVersion === 'v2',
+      preferences_enabled: this.config.agentGraphEnabled && this.config.agentGraphVersion === 'v2',
       workspace_enabled: this.config.workspaceEnabled,
       thinking_supported:
         personal?.thinking_supported ?? this.config.thinkingSupported,
@@ -365,7 +376,7 @@ export class DocumentAgentService {
     const coverageRegions = new Set<string>();
     let selectionRead = false;
     let candidateVersion = 0;
-    const baseContext = () => this.buildContext(request, context);
+    const baseContext = () => this.buildContext(request, context, environment, `initial:${request.request_id}`);
     let base: any;
     const tasks: Record<string, WorkerOutput> = Object.create(null);
     const wikiProofs = new Map<string, WikiProof>();
@@ -708,13 +719,16 @@ export class DocumentAgentService {
   }
 
   private async validateCitationSources(
-    citations: Iterable<Pick<AgentCitation, "kind" | "import_id" | "doc_id" | "version">>,
+    citations: Iterable<Pick<AgentCitation, "kind" | "import_id" | "doc_id" | "version" | "snapshot_hash">>,
     context: AccessContext,
   ) {
     for (const citation of citations) {
       if (citation.import_id) {
         const imported = await this.imports.require(citation.import_id);
         this.imports.assertOwner(imported, context);
+        if (citation.kind === 'import' && citation.snapshot_hash &&
+          citation.snapshot_hash !== createHash('sha256').update(imported.parsed_content ?? '').digest('hex'))
+          throw new ConflictException('导入资料内容已变更，请重新生成');
         if (imported.document_id)
           await this.documents.getAccessible(imported.document_id, context);
       }
@@ -733,9 +747,34 @@ export class DocumentAgentService {
     }
   }
 
-  async buildContext(request: DocumentAgentDto, context: AccessContext) {
+  async buildContext(request: DocumentAgentDto, context: AccessContext,
+    environment?: WorkerEnvironment, inputId = `initial:${request.request_id}`, userText = request.query,
+    snapshots: { skill?: WritingSkillSnapshot; preferences?: PreferenceSnapshot; extractPreferences?: boolean } = {}) {
+    const constraintState = this.config.conversationConstraintsEnabled && environment
+      ? await this.updateConstraints(request, context, environment, inputId, userText)
+      : { revision: 0, items: [] };
+    const constraintTokens = this.constraints?.tokenCount(constraintState) ?? 0;
+    let preferences: PreferenceSnapshot | undefined = snapshots.preferences;
+    if (environment?.features?.preferences && this.preferences) {
+      if (snapshots.extractPreferences !== false) {
+        const prepared = await this.preferences.prepare(context, `${environment.run_id}:${inputId}`, userText,
+          (messages) => this.runtime.turn(environment, messages, [], { role: 'classifier', json: true,
+            maxTokens: 1600, maxAttempts: 1, trace_name: 'writing_preferences' }), environment.signal);
+        preferences ??= prepared.snapshot;
+        if (prepared.saved_ids.length || prepared.candidate_ids.length)
+          environment.emit('preferences_updated', { saved_ids: prepared.saved_ids, candidate_ids: prepared.candidate_ids,
+            revision: prepared.state.revision });
+      } else preferences ??= this.preferences.snapshot(await this.preferences.get(context));
+    }
+    const preferenceTokens = preferences && this.preferences ? this.preferences.tokenCount(preferences) : 0;
+    if (preferenceTokens > 500 || constraintTokens + preferenceTokens > this.config.shortMemoryTokenBudget)
+      throw new AgentExecutionError('PREFERENCE_CONTEXT_EXCEEDED', '写作要求超过会话容量，请精简长期偏好');
     const identity = request.editor_snapshot.identity;
     const docId = identity.kind === "knowledge" ? identity.doc_id : undefined;
+    if (request.skill_id && !environment?.features?.skills)
+      throw new BadRequestException('当前任务版本不支持写作 Skill，请使用可恢复任务入口');
+    const skill = environment?.features?.skills && this.skills && request.skill_id
+      ? snapshots.skill ?? await this.skills.snapshot(context, { ...request, skill_id: request.skill_id }) : undefined;
     return {
       query: request.query,
       plan_step_limit: this.supervisor.maxPlanSteps(),
@@ -759,13 +798,17 @@ export class DocumentAgentService {
         text_length: request.editor_snapshot.selection.text.length,
       },
       references: request.references.map(({ content, ...ref }) => ref),
-      template: request.template_id
+      skill_snapshot: skill,
+      template: skill?.template ?? (request.template_id
         ? await this.workspace.getTemplate(context, request.template_id)
-        : undefined,
+        : undefined),
+      conversation_constraints: constraintState,
+      ...(preferences ? { user_preferences: preferences } : {}),
       conversation_memory: await this.memory.recentText(
         request.conversation_id,
         context,
-        docId,
+        agentMemoryDocumentId(identity),
+        Math.max(0, this.config.shortMemoryTokenBudget - constraintTokens - preferenceTokens),
       ),
       document_memory: docId
         ? await this.documentMemory.promptText(
@@ -777,6 +820,29 @@ export class DocumentAgentService {
           )
         : "",
     };
+  }
+
+  async skillCatalog(context: AccessContext) {
+    return this.skills ? (await this.skills.list(context)).filter((skill) => skill.enabled) : [];
+  }
+
+  async selectedSkill(request: DocumentAgentDto, context: AccessContext) {
+    return request.skill_id && this.skills ? this.skills.snapshot(context, { ...request, skill_id: request.skill_id }) : undefined;
+  }
+
+  skillPlan(snapshot: WritingSkillSnapshot, query: string) {
+    if (!this.skills) throw new BadRequestException('写作 Skill 服务不可用');
+    return this.skills.toPlan(snapshot, query);
+  }
+
+  async updateConstraints(request: DocumentAgentDto, context: AccessContext,
+    environment: WorkerEnvironment, inputId: string, userText = request.query) {
+    if (!this.constraints) throw new AgentExecutionError('MEMORY_UPDATE_FAILED', '约束记忆服务不可用');
+    const turn: ConstraintTurn = (messages) => this.runtime.turn(environment, messages, [], {
+      role: 'classifier', json: true, maxTokens: 1600, maxAttempts: 1,
+      trace_name: 'conversation_constraints',
+    });
+    return this.constraints.prepare(request, context, inputId, turn, environment.signal, userText);
   }
 
   async reviewCandidate(
@@ -800,8 +866,10 @@ export class DocumentAgentService {
       (candidate.kind === "edits" && candidate.edits.length > 1) ||
       (request.deep_thinking && ["answer", "edits"].includes(candidate.kind));
     if (needsReflection) {
-      run.status = "reflecting";
-      await this.audit.update(run);
+      if (!run.payload.workflow_version) {
+        run.status = "reflecting";
+        await this.audit.update(run);
+      }
       environment.emit("reflection", { status: "checking" });
       let rejectedByCritic = false;
       try {
@@ -824,6 +892,9 @@ export class DocumentAgentService {
                 ),
                 evidence_summary: Object.fromEntries(evidence),
                 template_constraints: base.template?.instructions,
+                skill_acceptance: base.skill_snapshot?.skill.acceptance,
+                conversation_constraints: base.conversation_constraints,
+                user_preferences: base.user_preferences,
               }),
             },
           ],
@@ -869,6 +940,8 @@ export class DocumentAgentService {
                   query: request.query,
                   candidate,
                   issues: verdict.issues,
+                  conversation_constraints: base.conversation_constraints,
+                  user_preferences: base.user_preferences,
                   plan,
                   evidence_summary: Object.fromEntries(evidence),
                 }),
@@ -1079,7 +1152,7 @@ export class DocumentAgentService {
       request.query,
       `${run.status === "awaiting_review" ? "[候选，尚未应用] " : ""}${JSON.stringify(candidate)}`,
       context,
-      identity.kind === "knowledge" ? identity.doc_id : undefined,
+      agentMemoryDocumentId(identity),
       run.run_id,
     );
     signal.throwIfAborted();

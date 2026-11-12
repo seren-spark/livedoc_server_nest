@@ -58,7 +58,16 @@
     "test:graph:checkpoints": "vitest run --config scripts/graph-checkpointer.vitest.config.ts",
     "verify:graph:checkpoints": "tsx scripts/verify-graph-checkpoint.ts",
     "test:graph:mysql": "node scripts/run-graph-mysql-tests.mjs",
-    "verify:graph:real": "node --loader ts-node/esm scripts/verify-graph-real.ts"
+    "verify:graph:real": "node --loader ts-node/esm scripts/verify-graph-real.ts",
+    "validate:agent-business": "node --loader ts-node/esm/transpile-only scripts/evaluate-agent-business.ts --validate-only",
+    "eval:agent-business": "node --max-old-space-size=768 --loader ts-node/esm/transpile-only scripts/evaluate-agent-business.ts",
+    "eval:agent-business:real": "node --max-old-space-size=768 --loader ts-node/esm/transpile-only scripts/evaluate-agent-business.ts --real",
+    "eval:agent-switch:real": "node --max-old-space-size=768 --loader ts-node/esm/transpile-only scripts/evaluate-agent-business.ts --real --switching",
+    "eval:agent-quality": "node --loader ts-node/esm/transpile-only scripts/agent-quality-report.ts",
+    "eval:agent-capacity": "node --max-old-space-size=768 --loader ts-node/esm/transpile-only scripts/evaluate-agent-business.ts --capacity",
+    "validate:research-writing": "node --loader ts-node/esm/transpile-only scripts/evaluate-agent-business.ts --research --validate-only",
+    "eval:research-writing": "node --max-old-space-size=768 --loader ts-node/esm/transpile-only scripts/evaluate-agent-business.ts --research",
+    "eval:research-writing:real": "node --max-old-space-size=768 --loader ts-node/esm/transpile-only scripts/evaluate-agent-business.ts --research --real"
   },
   "dependencies": {
     "@fastify/multipart": "^10.1.0",

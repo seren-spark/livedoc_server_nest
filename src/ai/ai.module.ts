@@ -25,12 +25,16 @@ import { AgentRunRepository } from './graph/agent-run.repository.js';
 import { AgentGraphWorkflow } from './graph/agent-graph.workflow.js';
 import { AgentGraphService } from './graph/agent-graph.service.js';
 import { AgentGraphController } from './graph/agent-graph.controller.js';
+import { WritingSkillsService } from './writing-skills.service.js';
+import { WritingSkillsController } from './writing-skills.controller.js';
+import { WritingPreferencesController } from './writing-preferences.controller.js';
 
 @Module({
   imports: [AuthModule,WikiModule,LlmModule, RetrievalModule, ObservabilityModule, DocumentsModule, MemoryModule,DocumentImportsModule,WorkspaceModule],
-  controllers: [AgentGraphController,WikiController,AiController,DocumentAgentController],
+  controllers: [WritingPreferencesController,WritingSkillsController,AgentGraphController,WikiController,AiController,DocumentAgentController],
   providers: [
     AgentRunRepository, AgentGraphWorkflow, AgentGraphService,
+    WritingSkillsService,
     AgentSupervisorService,AgentRuntimeService,DocumentAgentToolsService,DocumentAgentService,AgentAuditService,AgentMcpService,AgentSettingsService,
     AgentToolsService,
     DocumentSummaryService,

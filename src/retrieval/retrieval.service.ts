@@ -1,3 +1,4 @@
+import { selectEvidence } from './evidence-selection.js';
 import { prepareEmbeddingChunks } from './embedding-chunks.js';
 import { Injectable, Optional } from "@nestjs/common";
 import { ArticleRepository } from '../articles/article.repository.js';
@@ -130,8 +131,11 @@ export class RetrievalService {
       return true;
     }) : dedupeHits(readableRanked);
     //转换为 Citation
-    const uncompressedCitations = dedupedHits
-      .slice(0, request.top_k)
+    const selectionStrategy = wikiOnly || request.evidence_selection === false ? 'rank-v1' : 'facet-v1';
+    const selectedHits = selectionStrategy === 'rank-v1'
+      ? dedupedHits.slice(0, request.top_k)
+      : selectEvidence(dedupedHits, request.query, request.top_k);
+    const uncompressedCitations = selectedHits
       .map((hit, index) => hitToCitation(index + 1, hit));
     const compressionStarted = performance.now();
     //压缩上下文
@@ -167,6 +171,7 @@ export class RetrievalService {
       const eligible = await authorize(this.articleDrafts ? await this.articleDrafts.filterHits(readableCandidates) : readableCandidates);
       return { citations, trace, retrieval_debug: {
         schema_version: 1, candidate_stage: 'authorized_fused_before_rerank', candidate_limit: 20,
+        selection_strategy: selectionStrategy,
         candidates: eligible.slice(0, 20).map((hit, index) => hitToCitation(index + 1, hit)),
         ranked: uncompressedCitations,
       } };
@@ -284,8 +289,7 @@ export class RetrievalService {
     );
     const rerankMs = elapsedMs(rerankStarted);
     const dedupedHits = dedupeHits(rerankedHits);
-    const uncompressedCitations = dedupedHits
-      .slice(0, options.topK ?? 5)
+    const uncompressedCitations = selectEvidence(dedupedHits, options.query, options.topK ?? 5)
       .map((hit, index) => hitToCitation(index + 1, hit));
     const compressionStarted = performance.now();
     const citations = this.compressor.compress(uncompressedCitations, rewrittenQuery);

@@ -13,6 +13,7 @@ export function retrievalEvidence(retrieval: RetrievalDebug) {
   const sources = (hits: Citation[]) => hits.map(c => ({ doc_id: c.doc_id, chunk_id: c.chunk_id,
     document_version: c.document_version, content: c.content, source_content: c.source_content ?? null }));
   return { schema_version: retrieval.schema_version, candidate_stage: retrieval.candidate_stage, candidate_limit: retrieval.candidate_limit,
+    ...(retrieval.selection_strategy ? { selection_strategy: retrieval.selection_strategy } : {}),
     candidates: sources(retrieval.candidates), ranked: sources(retrieval.ranked) };
 }
 

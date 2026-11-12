@@ -30,6 +30,9 @@ export class DocumentAgentController {
   @Get('agent/settings') getSettings(@CurrentAccess() context: AccessContext) {
     return this.settings.get(context);
   }
+  @Get('agent/metrics') metrics(@CurrentAccess() context: AccessContext, @Query('window') window = '24h') {
+    return this.audit.metrics(context, window);
+  }
   @Post('agent/settings/validate') async configure(@Body() input: AgentSettingsDto, @CurrentAccess() context: AccessContext, @Req() request: FastifyRequest, @Res({ passthrough: true }) reply: FastifyReply) {
     const abort = new AbortController();
     const cancel = () => { if (!reply.raw.writableEnded) abort.abort(); };

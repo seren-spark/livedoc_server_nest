@@ -1,3 +1,6 @@
+/**
+ * @file 公共请求校验。定义文档操作、检索、写作与反馈接口共用的请求约束。
+ */
 import { Type } from 'class-transformer';
 import { plainToInstance } from 'class-transformer';
 import {

@@ -1,3 +1,6 @@
+/**
+ * @file 任务证据上下文。筛选当前任务需要的证据并压缩工具历史，保留来源与缺口。
+ */
 import type { AgentCitation } from './document-agent.types.js';
 import { tokenizeKeyword } from '../retrieval/text-utils.js';
 
@@ -30,6 +33,12 @@ export type TaskContextEvent =
       citation_ids: string[]; descriptor: ToolCompaction }
   | { kind: 'retrieval'; citation_id: string; offset: number; next_offset: number | null; returned_tokens: number };
 
+/**
+ * 递归提取工具或候选数据中的证据引用。
+ *
+ * @param evidence 本次可用的引用标识与原文证据。
+ * @returns 整理后的结果列表。
+ */
 export function evidenceReferences(evidence: TaskEvidence[]): TaskEvidenceReference[] {
   return evidence.map(({ citation }) => ({ citation_id: citation.id, title: citation.title,
     ...(citation.version === undefined ? {} : { version: citation.version }),
@@ -44,9 +53,24 @@ const NAVIGATION_FIELDS = new Set([
   'partial', 'content_offset', 'next_content_offset', 'total_content_length', 'doc_id', 'wiki_id', 'knowledge_layer',
 ]);
 
-/** Keep server-owned source handles and paging metadata outside the model-written summary. */
+/**
+ * 压缩工具结果时保留由服务端维护的来源句柄与分页信息。
+ *
+ *  Keep server-owned source handles and paging metadata outside the model-written summary.
+ *
+ * @param raw 尚未规范化或压缩的原始数据。
+ * @param value 待校验或转换的值。
+ * @param available 本次仍可使用的候选或额度。
+ * @returns ToolCompaction 类型的处理结果。
+ */
 export function toolCompaction(raw: unknown, value: unknown, available: TaskEvidence[]): ToolCompaction {
   const result = value as { summary?: unknown; missing?: unknown; conflicts?: unknown } | null;
+  /**
+   * 从未知输入中过滤出有效字符串数组。
+   *
+   * @param items 需要处理的条目集合。
+   * @returns 条件是否满足的判断结果。
+   */
   const strings = (items: unknown) => Array.isArray(items) && items.length <= 20 &&
     items.every((item) => typeof item === 'string' && item.length <= 2000);
   if (!result || typeof result.summary !== 'string' || !result.summary.trim() ||
@@ -55,6 +79,11 @@ export function toolCompaction(raw: unknown, value: unknown, available: TaskEvid
   const missing = new Set(result.missing as string[]);
   const conflicts = new Set(result.conflicts as string[]);
   const navigation: Record<string, unknown>[] = [];
+  /**
+   * 递归收集任务数据中的证据、缺口和冲突信息。
+   *
+   * @param node 当前语法树或编辑器节点。
+   */
   const visit = (node: unknown) => {
     if (Array.isArray(node)) { node.forEach(visit); return; }
     if (!node || typeof node !== 'object') return;
@@ -77,7 +106,19 @@ export function toolCompaction(raw: unknown, value: unknown, available: TaskEvid
     navigation, missing: [...missing], conflicts: [...conflicts] };
 }
 
-/** Select previews under a token budget; full adopted evidence stays available by its stable handle. */
+/**
+ * 在 Token 预算内选择证据预览，完整证据仍可通过稳定来源标识读取。
+ *
+ *  Select previews under a token budget; full adopted evidence stays available by its stable handle.
+ *
+ * @param evidence 本次可用的引用标识与原文证据。
+ * @param goal 筛选资料或生成结果时需要满足的任务目标。
+ * @param budget 本次处理允许使用的 Token 或调用预算。
+ * @param perSourceBudget 分配给单个来源的上下文 Token 上限。
+ * @param extract 从原文提取相关片段的回调。
+ * @param count 需要读取或处理的数量。
+ * @returns 整理后的结果列表。
+ */
 export function selectTaskEvidence(
   evidence: TaskEvidence[], goal: string, budget: number, perSourceBudget: number,
   extract: (content: string, goal: string, budget: number) => string,

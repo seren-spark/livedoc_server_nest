@@ -1,3 +1,6 @@
+/**
+ * @file Wiki 知识协议。定义知识页面、来源证据、编译状态和时效性判断。
+ */
 import type { AgentCitation } from "../ai/document-agent.types.js";
 import type { KnowledgeScope } from "../common/types.js";
 
@@ -96,6 +99,12 @@ export interface WikiCoverageResult {
   reason?: "invalid_response" | "judge_unavailable";
 }
 export type WikiSourceStatus = "valid" | "stale" | "unavailable";
+/**
+ * 识别来源内容是否包含需要关注时效性的表达。
+ *
+ * @param query 用户问题或检索查询。
+ * @returns 条件是否满足的判断结果。
+ */
 export function isTimeSensitive(query: string) {
   return /最新|实时|现行|今天|今日|现在|目前|当前价格|价格|报价|售价|政策|截至|最近|刚刚|时效|原文核实|重新检索|不使用\s*wiki|\b(?:latest|current|today|real-time|prices?|pricing|polic(?:y|ies))\b/i.test(
     query,

@@ -1,3 +1,6 @@
+/**
+ * @file 文档数据协议。定义知识文档元数据、编辑内容、版本与索引请求。
+ */
 import type { IndexStatus, SourceType, Visibility } from "../common/types.js";
 
 export interface DocumentRecord {

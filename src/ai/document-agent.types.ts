@@ -1,3 +1,6 @@
+/**
+ * @file Agent 业务协议。定义编辑器快照、引用、计划、工具调用及候选结果的数据结构。
+ */
 export type AgentMode = "ask" | "plan" | "agent";
 export type OutputTarget = "current_document" | "new_document";
 export type DocumentIdentity =

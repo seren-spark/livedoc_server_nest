@@ -1,3 +1,6 @@
+/**
+ * @file 推理线程桥接。将分词、Embedding 和重排请求发送到 Worker Thread，避免阻塞 API 线程。
+ */
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { Worker } from 'node:worker_threads';
 import { AppConfig } from '../config/app-config.js';
@@ -12,6 +15,11 @@ export class InferenceWorkerService implements OnModuleDestroy {
     { resolve: (value: any) => void; reject: (error: Error) => void; timeout: NodeJS.Timeout }
   >();
 
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   */
   constructor(private readonly config: AppConfig) {}
 
   /**
@@ -23,6 +31,12 @@ export class InferenceWorkerService implements OnModuleDestroy {
     return this.request('embed', { texts });
   }
 
+  /**
+   * 使用 Embedding 模型分词器计算输入长度。
+   *
+   * @param texts 需要批量处理的文本列表。
+   * @returns 计算得到的数值向量或评分列表。
+   */
   async countEmbeddingTokens(texts: string[]): Promise<number[]> {
     return this.request('count_embedding_tokens', { texts });
   }
@@ -36,6 +50,9 @@ export class InferenceWorkerService implements OnModuleDestroy {
     return this.request('rerank', { query, passages });
   }
 
+  /**
+   * 在模块关闭时停止后台工作并释放连接与资源。
+   */
   async onModuleDestroy(): Promise<void> {
     this.closing = true;
     this.rejectPending(new Error('Inference worker is shutting down'));
@@ -43,6 +60,13 @@ export class InferenceWorkerService implements OnModuleDestroy {
     this.worker = undefined;
   }
 
+  /**
+   * 检查推理队列容量，发送带序号的线程消息，并等待结果或超时。
+   *
+   * @param type 当前数据或节点类型。
+   * @param payload 需要传递或持久化的业务数据。
+   * @returns T 类型的处理结果。
+   */
   private request<T>(type: string, payload: unknown): Promise<T> {
     if (this.pending.size >= this.config.inferenceMaxPending) {
       return Promise.reject(new Error('Inference queue is full; retry later'));
@@ -68,6 +92,9 @@ export class InferenceWorkerService implements OnModuleDestroy {
     });
   }
 
+  /**
+   * 在首次需要推理时创建 Worker，并注册消息与退出处理。
+   */
   private ensureWorker(): void {
     if (this.worker) return;
     const runningTypeScript = import.meta.url.endsWith('.ts');
@@ -101,6 +128,11 @@ export class InferenceWorkerService implements OnModuleDestroy {
     });
   }
 
+  /**
+   * 拒绝尚未结束的推理请求，避免线程退出后请求一直等待。
+   *
+   * @param error 本次操作捕获的异常。
+   */
   private rejectPending(error: Error): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timeout);
@@ -110,6 +142,12 @@ export class InferenceWorkerService implements OnModuleDestroy {
   }
 }
 
+/**
+ * 生成能够加载 TypeScript 推理入口的 Worker 启动代码。
+ *
+ * @param target 本次操作或定位的目标。
+ * @returns URL 类型的处理结果。
+ */
 function typescriptWorkerEntry(target: URL): URL {
   const tsxApi = new URL('../../node_modules/tsx/dist/esm/api/index.mjs', import.meta.url);
   const bootstrap = [

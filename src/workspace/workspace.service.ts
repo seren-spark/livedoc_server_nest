@@ -1,3 +1,6 @@
+/**
+ * @file 工作空间管理。维护分类树、文档归属、回收站和模板，协调相关文档状态。
+ */
 import {
   BadRequestException,
   ConflictException,
@@ -25,9 +28,26 @@ import {
   type NoteTemplate,
 } from "./workspace.types.js";
 
+/**
+ * 根据用户和空间生成工作空间状态的隔离键。
+ *
+ * @param c 当前用户、空间与团队身份，用于权限校验。
+ * @returns 整理后的文本或标识。
+ */
 const keyFor = (c: AccessContext) => `${c.space_id}:${c.user_id}`;
+/**
+ * 清理分类名称并生成比较使用的规范形式。
+ *
+ * @param name 目标名称。
+ * @returns 整理后的文本或标识。
+ */
 const normalizedName = (name: string) =>
   name.trim().normalize("NFKC").toLocaleLowerCase();
+/**
+ * 校验分类树的层级、父子关系和名称约束。
+ *
+ * @param categories 当前工作空间的分类记录。
+ */
 export function validateCategoryTree(categories: NoteCategory[]): void {
   const active = categories.filter((c) => !c.deleted_at);
   const byId = new Map(active.map((c) => [c.category_id, c]));
@@ -57,6 +77,13 @@ export function validateCategoryTree(categories: NoteCategory[]): void {
     }
   }
 }
+/**
+ * 收集指定分类下的全部后代分类标识。
+ *
+ * @param categories 当前工作空间的分类记录。
+ * @param id 目标记录的唯一标识。
+ * @returns 整理后的字符串列表。
+ */
 export function descendants(categories: NoteCategory[], id: string): string[] {
   const result = new Set([id]);
   for (let changed = true; changed; ) {
@@ -73,6 +100,13 @@ export function descendants(categories: NoteCategory[], id: string): string[] {
   }
   return [...result];
 }
+/**
+ * 把历史文档标签整理为分类树及文档归属。
+ *
+ * @param state 当前业务或插件状态。
+ * @param context 当前用户、空间与团队身份，用于权限校验。
+ * @returns 计算得到的数值。
+ */
 export function backfillCategories(
   state: CategoryState,
   context: AccessContext,
@@ -122,6 +156,19 @@ export class WorkspaceService {
   >();
   private readonly templates = new Map<string, Map<string, NoteTemplate>>();
   private readonly writes = new Map<string, Promise<unknown>>();
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param db 共享数据库服务。
+   * @param documents 需要筛选或处理的文档集合。
+   * @param jobs 后台任务队列服务。
+   * @param vectors VectorStoreService 依赖实例。
+   * @param memoryJobs DocumentMemoryJobsService 依赖实例。
+   * @param assets 当前文档关联的资源集合。
+   * @param profiles DocumentMemoryService 依赖实例。
+   * @param memory ConversationMemoryService 依赖实例。
+   * @param imports DocumentImportsService 依赖实例。
+   */
   constructor(
     private readonly db: DatabaseService,
     private readonly documents: DocumentsService,
@@ -134,6 +181,12 @@ export class WorkspaceService {
     private readonly imports: DocumentImportsService,
   ) {}
 
+  /**
+   * 读取当前用户的分类树及其版本信息。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async tree(context: AccessContext) {
     const state = await this.load(context);
     return {
@@ -151,6 +204,13 @@ export class WorkspaceService {
       ),
     };
   }
+  /**
+   * 在当前事务或内存路径中读取分类树和用户私有文档。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param manager 当前数据库事务执行器（可选）。
+   * @returns CategoryState 类型的处理结果。
+   */
   private async load(
     context: AccessContext,
     manager?: EntityManager,
@@ -163,6 +223,13 @@ export class WorkspaceService {
         documents: structuredClone(await this.documents.ownedPrivate(context)),
       };
     }
+    /**
+     * 优先使用当前事务执行查询，保持分类操作中的读写一致。
+     *
+     * @param sql 需要执行的参数化 SQL。
+     * @param args 当前工具调用的参数。
+     * @returns any 类型的处理结果。
+     */
     const query = (sql: string, args: unknown[]) =>
       manager ? manager.query(sql, args) : this.db.query<any>(sql, args);
     if (manager)
@@ -188,12 +255,26 @@ export class WorkspaceService {
       documents: await this.documents.ownedPrivate(context, manager),
     };
   }
+  /**
+   * 比较分类树版本，在一次写入中应用分类与文档归属变更。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param revision 调用方读取到的状态修订号。
+   * @param work 需要在受控上下文中执行的异步操作。
+   * @returns 整理后的状态与操作结果对象。
+   */
   private async mutate<T>(
     context: AccessContext,
     revision: number,
     work: (state: CategoryState) => T,
   ): Promise<{ result: T; revision: number }> {
     const key = keyFor(context);
+    /**
+     * 锁定并读取最新分类树，检查期望版本后执行分类或回收变更。
+     *
+     * @param manager 当前数据库事务执行器（可选）。
+     * @returns 整理后的状态与操作结果对象。
+     */
     const execute = async (manager?: EntityManager) => {
       const state = await this.load(context, manager);
       if (state.revision !== revision)
@@ -273,6 +354,13 @@ export class WorkspaceService {
     return this.write(context, execute);
   }
 
+  /**
+   * 使用数据库事务或按用户串行的内存队列执行工作空间写入。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param execute 当前数据库事务执行器。
+   * @returns T 类型的处理结果。
+   */
   private async write<T>(
     context: AccessContext,
     execute: (manager?: EntityManager) => Promise<T>,
@@ -289,6 +377,14 @@ export class WorkspaceService {
       if (this.writes.get(key) === pending) this.writes.delete(key);
     }
   }
+  /**
+   * 在当前工作空间中查找指定分类，缺失时中止操作。
+   *
+   * @param state 当前业务或插件状态。
+   * @param id 目标记录的唯一标识。
+   * @param deleted 当前条目是否已被删除或回收。
+   * @returns NoteCategory 类型的处理结果。
+   */
   private category(state: CategoryState, id: string, deleted = false) {
     const category = state.categories.find(
       (c) => c.category_id === id && (deleted || !c.deleted_at),
@@ -296,6 +392,15 @@ export class WorkspaceService {
     if (!category) throw new NotFoundException("分类不存在");
     return category;
   }
+  /**
+   * 根据输入创建分类与模板并返回结果。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param name 目标名称。
+   * @param parent 目标父节点或父分类。
+   * @param revision 调用方读取到的状态修订号。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async create(
     context: AccessContext,
     name: string,
@@ -325,6 +430,15 @@ export class WorkspaceService {
       return category;
     });
   }
+  /**
+   * 校验名称后更新分类。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param id 目标记录的唯一标识。
+   * @param name 目标名称。
+   * @param revision 调用方读取到的状态修订号。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async rename(
     context: AccessContext,
     id: string,
@@ -336,6 +450,16 @@ export class WorkspaceService {
       return id;
     });
   }
+  /**
+   * 将分类移到目标父节点，检查循环和层级约束。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param id 目标记录的唯一标识。
+   * @param parent 目标父节点或父分类。
+   * @param revision 调用方读取到的状态修订号。
+   * @param position 待查询或映射的文档位置（可选）。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async move(
     context: AccessContext,
     id: string,
@@ -365,6 +489,15 @@ export class WorkspaceService {
       return id;
     });
   }
+  /**
+   * 按提交的顺序调整同级分类。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param parent 目标父节点或父分类。
+   * @param ids 本次操作涉及的记录标识集合。
+   * @param revision 调用方读取到的状态修订号。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async reorder(
     context: AccessContext,
     parent: string | null,
@@ -387,6 +520,15 @@ export class WorkspaceService {
       return ids;
     });
   }
+  /**
+   * 将文档归入指定分类。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param ids 本次操作涉及的记录标识集合。
+   * @param categoryId category 对应的唯一标识。
+   * @param revision 调用方读取到的状态修订号。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async assign(
     context: AccessContext,
     ids: string[],
@@ -403,6 +545,15 @@ export class WorkspaceService {
       return ids;
     });
   }
+  /**
+   * 合并两个分类，并迁移其子分类和文档。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param source 当前来源内容或来源记录。
+   * @param target 本次操作或定位的目标。
+   * @param revision 调用方读取到的状态修订号。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async merge(
     context: AccessContext,
     source: string,
@@ -418,6 +569,12 @@ export class WorkspaceService {
       )
         throw new BadRequestException("不能合并祖先或后代分类");
       const batch = randomUUID();
+      /**
+       * 合并分类树节点及其关联记录。
+       *
+       * @param from 编辑区间的起始位置。
+       * @param to 编辑区间的结束位置。
+       */
       const combine = (from: string, to: string) => {
         for (const d of s.documents)
           if (d.category_id === from) d.category_id = to;
@@ -442,12 +599,27 @@ export class WorkspaceService {
       return { source, target };
     });
   }
+  /**
+   * 将文档移入回收站，同时暂停相关检索状态。
+   *
+   * @param d 当前知识文档记录。
+   * @param batch 当前批次需要处理的输入。
+   */
   private trashDocument(d: DocumentRecord, batch: string) {
     d.deleted_at = new Date();
     d.delete_batch_id = batch;
     d.document_version++;
     d.active_index_version = null;
   }
+  /**
+   * 将分类及其相关文档移入回收站。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param id 目标记录的唯一标识。
+   * @param include 是否包含本次可选的关联内容。
+   * @param revision 调用方读取到的状态修订号。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async trashCategory(
     context: AccessContext,
     id: string,
@@ -477,6 +649,13 @@ export class WorkspaceService {
     await this.suspend(outcome.result.document_ids);
     return outcome;
   }
+  /**
+   * 按文档标识执行回收操作。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param id 目标记录的唯一标识。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async trashDocumentById(context: AccessContext, id: string) {
     const state = await this.load(context);
     const outcome = await this.mutate(context, state.revision, (s) => {
@@ -488,11 +667,25 @@ export class WorkspaceService {
     await this.suspend([id]);
     return outcome;
   }
+  /**
+   * 在分类状态锁定期间彻底清理回收文档与关联资源。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param ids 本次操作涉及的记录标识集合。
+   * @param revision 调用方读取到的状态修订号。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async purgeDocuments(
     context: AccessContext,
     ids: string[],
     revision: number,
   ) {
+    /**
+     * 锁定并读取最新分类树，检查期望版本后执行分类或回收变更。
+     *
+     * @param manager 当前数据库事务执行器（可选）。
+     * @returns 整理后的状态与操作结果对象。
+     */
     const execute = async (manager?: EntityManager) => {
       const state = await this.load(context, manager);
       if (state.revision !== revision)
@@ -549,6 +742,11 @@ export class WorkspaceService {
     };
     return this.write(context, execute);
   }
+  /**
+   * 暂停被回收内容的索引或后台任务。
+   *
+   * @param ids 本次操作涉及的记录标识集合。
+   */
   private async suspend(ids: string[]) {
     for (const id of ids) {
       await this.jobs.cancelDocument(id);
@@ -563,6 +761,13 @@ export class WorkspaceService {
       }
     }
   }
+  /**
+   * 读取当前用户回收站中的文档与分类。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param type 当前数据或节点类型。
+   * @returns 知识文档记录列表。
+   */
   async trash(context: AccessContext, type: string) {
     const s = await this.load(context);
     return {
@@ -573,6 +778,17 @@ export class WorkspaceService {
           : s.documents.filter((d) => d.deleted_at),
     };
   }
+  /**
+   * 按用户选择恢复文档与分类，并处理父分类和目标名称。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param type 当前数据或节点类型。
+   * @param ids 本次操作涉及的记录标识集合。
+   * @param include 是否包含本次可选的关联内容。
+   * @param names 目标名称集合。
+   * @param revision 调用方读取到的状态修订号。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async restore(
     context: AccessContext,
     type: string,
@@ -583,6 +799,11 @@ export class WorkspaceService {
   ) {
     const restored = await this.mutate(context, revision, (s) => {
       const documentIds = new Set<string>();
+      /**
+       * 恢复指定回收分类及其层级归属。
+       *
+       * @param id 目标记录的唯一标识。
+       */
       const restoreCategory = (id: string) => {
         const c = this.category(s, id, true);
         if (c.parent_id) restoreCategory(c.parent_id);
@@ -657,6 +878,14 @@ export class WorkspaceService {
     }
     return restored;
   }
+  /**
+   * 彻底删除回收分类并整理其关联文档。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param ids 本次操作涉及的记录标识集合。
+   * @param revision 调用方读取到的状态修订号。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async purgeCategories(
     context: AccessContext,
     ids: string[],
@@ -678,6 +907,12 @@ export class WorkspaceService {
       return [...remove];
     });
   }
+  /**
+   * 读取当前用户可见的写作模板列表。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 整理后的结果列表。
+   */
   async listTemplates(context: AccessContext): Promise<NoteTemplate[]> {
     const rows = this.db.metadataEnabled
       ? await this.db.query<any>(
@@ -690,6 +925,13 @@ export class WorkspaceService {
       ...rows.map((r: any) => ({ ...r, revision: Number(r.revision) })),
     ];
   }
+  /**
+   * 读取指定写作模板的完整定义。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param id 目标记录的唯一标识。
+   * @returns NoteTemplate 类型的处理结果。
+   */
   async getTemplate(context: AccessContext, id: string) {
     const t = (await this.listTemplates(context)).find(
       (t) => t.template_id === id,
@@ -697,6 +939,15 @@ export class WorkspaceService {
     if (!t) throw new NotFoundException("模板不存在");
     return t;
   }
+  /**
+   * 校验模板输入与版本后保存模板。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param input 本次操作的输入数据。
+   * @param id 目标记录的唯一标识（可选）。
+   * @param revision 调用方读取到的状态修订号（可选）。
+   * @returns NoteTemplate 类型的处理结果。
+   */
   async saveTemplate(
     context: AccessContext,
     input: Partial<NoteTemplate>,
@@ -755,6 +1006,13 @@ export class WorkspaceService {
     }
     return t;
   }
+  /**
+   * 删除当前用户有权管理的写作模板。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param id 目标记录的唯一标识。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async deleteTemplate(context: AccessContext, id: string) {
     if (id.startsWith("builtin-")) throw new ForbiddenException("内置模板只读");
     await this.getTemplate(context, id);
@@ -766,6 +1024,12 @@ export class WorkspaceService {
     else this.templates.get(keyFor(context))?.delete(id);
     return { status: "deleted" };
   }
+  /**
+   * 为历史文档补建分类归属。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async backfill(context: AccessContext) {
     const s = await this.load(context);
     return this.mutate(context, s.revision, (state) =>

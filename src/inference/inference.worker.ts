@@ -1,3 +1,6 @@
+/**
+ * @file 模型推理线程。在独立线程加载模型并响应向量化、分词和重排消息。
+ */
 import { parentPort, workerData } from "node:worker_threads";
 
 interface WorkerConfig {
@@ -12,6 +15,11 @@ let embeddingPipeline: any;
 let rerankModel: any;
 let rerankTokenizer: any;
 
+/**
+ * 懒加载并复用 Embedding 模型推理管线。
+ *
+ * @returns any 类型的处理结果。
+ */
 async function getEmbeddingPipeline() {
   if (!embeddingPipeline) {
     const { env, pipeline } = await import("@huggingface/transformers");
@@ -27,6 +35,12 @@ async function getEmbeddingPipeline() {
   return embeddingPipeline;
 }
 
+/**
+ * 使用 Embedding 模型分词器计算输入长度。
+ *
+ * @param texts 需要批量处理的文本列表。
+ * @returns 计算得到的数值向量或评分列表。
+ */
 async function countEmbeddingTokens(texts: string[]): Promise<number[]> {
   const model = await getEmbeddingPipeline();
   const tokenizer = model.tokenizer;
@@ -80,7 +94,7 @@ parentPort?.on(
        *      data: Float32Array [3.2, -0.5, 1.8]  // 3 个 passage 的 logit
        *   }
        *  }
-       * 
+       *
        */
         const output = await model(message.payload.texts, {
           pooling: "cls", // 用 [CLS] token 的输出作为整句表示

@@ -1,3 +1,6 @@
+/**
+ * @file 写作技能协议。定义技能参数、步骤、验收要求和执行时的技能快照。
+ */
 import type { ExecutionPlan } from './document-agent.types.js';
 import type { NoteTemplate } from '../workspace/workspace.types.js';
 

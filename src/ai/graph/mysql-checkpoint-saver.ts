@@ -1,3 +1,6 @@
+/**
+ * @file MySQL 图检查点。实现 LangGraph 检查点读写接口，保存线程状态和中间写入。
+ */
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -37,10 +40,22 @@ export const CHECKPOINT_SCHEMA = [
 
 type Storage = Pick<DatabaseService, "query" | "transaction">;
 type Fence = (manager: EntityManager, config: RunnableConfig) => Promise<void>;
+/**
+ * 将检查点命名空间转换为数据库使用的稳定键。
+ *
+ * @param ns 检查点命名空间。
+ * @returns 整理后的文本或标识。
+ */
 const nsKey = (ns: string) => createHash("sha256").update(ns).digest("hex");
 
 /** Full checkpoint/pending-write storage. The optional fence runs in the write transaction. */
 export class MySqlCheckpointSaver extends BaseCheckpointSaver {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param db 共享数据库服务。
+   * @param fence 检查执行代次与写入权限的事务约束（可选）。
+   */
   constructor(
     private readonly db: Storage,
     private readonly fence?: Fence,
@@ -48,10 +63,19 @@ export class MySqlCheckpointSaver extends BaseCheckpointSaver {
     super();
   }
 
+  /**
+   * 准备检查点保存所需的数据库表。
+   */
   async setup() {
     for (const sql of CHECKPOINT_SCHEMA) await this.db.query(sql);
   }
 
+  /**
+   * 从数据库记录还原 LangGraph 检查点元组。
+   *
+   * @param row 数据库查询返回的一行数据。
+   * @returns CheckpointTuple 类型的处理结果。
+   */
   private async tuple(row: any): Promise<CheckpointTuple> {
     const config = {
       configurable: {
@@ -143,6 +167,12 @@ export class MySqlCheckpointSaver extends BaseCheckpointSaver {
     };
   }
 
+  /**
+   * 读取指定检查点及其待处理写入。
+   *
+   * @param config 运行配置。
+   * @returns CheckpointTuple 类型的处理结果；未找到或不可用时可能为空。
+   */
   async getTuple(config: RunnableConfig): Promise<CheckpointTuple | undefined> {
     const c = config.configurable ?? {};
     const rows = await this.db.query<any>(
@@ -156,6 +186,13 @@ export class MySqlCheckpointSaver extends BaseCheckpointSaver {
     return rows[0] ? this.tuple(rows[0]) : undefined;
   }
 
+  /**
+   * 按线程、命名空间和查询条件枚举历史检查点。
+   *
+   * @param config 运行配置。
+   * @param options 控制本次行为的可选配置。
+   * @returns 按执行顺序逐步产出的进度事件或处理结果。
+   */
   async *list(
     config: RunnableConfig,
     options: CheckpointListOptions = {},
@@ -202,6 +239,15 @@ export class MySqlCheckpointSaver extends BaseCheckpointSaver {
     }
   }
 
+  /**
+   * 保存检查点与变更的状态通道，返回后续读取所需的配置。
+   *
+   * @param config 运行配置。
+   * @param checkpoint 待读取或写入的图检查点。
+   * @param metadata 来源、权限或版本等附加元数据。
+   * @param newVersions 本次写入完成后的文档版本。
+   * @returns RunnableConfig<Record<string, any>> 类型的处理结果。
+   */
   async put(
     config: RunnableConfig,
     checkpoint: Checkpoint,
@@ -250,6 +296,14 @@ export class MySqlCheckpointSaver extends BaseCheckpointSaver {
     };
   }
 
+  /**
+   * 保存节点在检查点之间产生的中间写入。
+   *
+   * @param config 运行配置。
+   * @param writes writes 参数（PendingWrite[]）。
+   * @param taskId task 对应的唯一标识。
+   * @param taskPath taskPath 参数。
+   */
   async putWrites(
     config: RunnableConfig,
     writes: PendingWrite[],
@@ -294,6 +348,11 @@ export class MySqlCheckpointSaver extends BaseCheckpointSaver {
     });
   }
 
+  /**
+   * 删除指定图线程的检查点及关联写入。
+   *
+   * @param threadId thread 对应的唯一标识。
+   */
   async deleteThread(threadId: string): Promise<void> {
     await this.db.transaction(async (manager) => {
       await manager.query("DELETE FROM agent_graph_writes WHERE thread_id=?", [

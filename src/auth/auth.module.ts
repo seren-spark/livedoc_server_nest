@@ -1,3 +1,6 @@
+/**
+ * @file 鉴权模块。注册会话服务与全局鉴权守卫。
+ */
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { AuthController } from './auth.controller.js';

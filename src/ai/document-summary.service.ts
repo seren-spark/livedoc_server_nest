@@ -1,3 +1,6 @@
+/**
+ * @file 长文摘要。按模型上下文预算执行分块摘要、分组归并和最终汇总。
+ */
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { AppConfig } from '../config/app-config.js';
 import { chunkMarkdown, type Chunk } from '../retrieval/chunker.js';
@@ -37,12 +40,26 @@ type PreparationEvent =
 
 @Injectable()
 export class DocumentSummaryService {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param llm 共享模型调用服务。
+   * @param tokenizer ContextCompressorService 依赖实例。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly llm: LlmService,
     private readonly tokenizer: ContextCompressorService,
   ) {}
 
+  /**
+   * 执行内容汇总流程并返回摘要结果。
+   *
+   * @param input 本次操作的输入数据。
+   * @param signal 取消信号，用于中止请求和后台处理（可选）。
+   * @returns 整理后的文本或标识。
+   */
   async summarize(input: DocumentSummaryInput, signal?: AbortSignal): Promise<string> {
     let finalPrompt: string | undefined;
     for await (const event of this.prepare(input, signal)) {
@@ -53,6 +70,13 @@ export class DocumentSummaryService {
     return this.llm.complete(finalPrompt, signal, this.config.summaryMaxOutputTokens);
   }
 
+  /**
+   * 先输出长文摘要阶段进度，再流式输出最终汇总文本。
+   *
+   * @param input 本次操作的输入数据。
+   * @param signal 取消信号，用于中止请求和后台处理（可选）。
+   * @returns 按执行顺序逐步产出的进度事件或处理结果。
+   */
   async *stream(
     input: DocumentSummaryInput,
     signal?: AbortSignal,
@@ -81,6 +105,13 @@ export class DocumentSummaryService {
     yield { type: 'progress', data: { phase: 'final', completed: 1, total: 1, level } };
   }
 
+  /**
+   * 先判断是否可直接摘要，超预算时执行分块摘要和多轮归并。
+   *
+   * @param input 本次操作的输入数据。
+   * @param signal 取消信号，用于中止请求和后台处理（可选）。
+   * @returns 按执行顺序逐步产出的进度事件或处理结果。
+   */
   private async *prepare(
     input: DocumentSummaryInput,
     signal?: AbortSignal,
@@ -173,6 +204,14 @@ export class DocumentSummaryService {
     }
   }
 
+  /**
+   * 按摘要输入预算，将长文拆为可独立处理的段落块。
+   *
+   * @param title 文档或界面标题。
+   * @param content 待处理的正文内容。
+   * @param instruction 本次生成或修订需要遵守的指令。
+   * @returns 带原文偏移与章节信息的索引分块列表。
+   */
   private buildMapChunks(title: string, content: string, instruction: string): Chunk[] {
     const emptyChunk: Chunk = {
       chunk_id: 'summary-probe',
@@ -219,6 +258,13 @@ export class DocumentSummaryService {
     throw new Error('LLM context window is too small for a safe map summary prompt');
   }
 
+  /**
+   * 将中间摘要装入预算允许的分组，准备下一轮归并。
+   *
+   * @param items 需要处理的条目集合。
+   * @param input 本次操作的输入数据。
+   * @returns 整理后的结果列表。
+   */
   private packSummaryItems(items: SummaryItem[], input: DocumentSummaryInput): SummaryItem[][] {
     const batches: SummaryItem[][] = [];
     let current: SummaryItem[] = [];
@@ -249,6 +295,14 @@ export class DocumentSummaryService {
     return batches;
   }
 
+  /**
+   * 生成一组内容的摘要，并在允许的暂时失败范围内重试。
+   *
+   * @param prompt 发送给模型的提示词。
+   * @param signal 取消信号，用于中止请求和后台处理。
+   * @param label 界面展示的名称。
+   * @returns 整理后的文本或标识。
+   */
   private async completeGroupWithRetry(
     prompt: string,
     signal: AbortSignal | undefined,
@@ -270,20 +324,47 @@ export class DocumentSummaryService {
     throw new Error(`Failed to summarize ${label} after one retry: ${detail}`);
   }
 
+  /**
+   * 扣除提示词与输出预留后，计算安全的输入 Token 预算。
+   *
+   * @param basePrompt 尚未加入本次资料的基础提示词。
+   * @param maxOutputTokens 为模型输出预留的 Token 上限。
+   * @returns 计算得到的数值。
+   */
   private safeInputBudget(basePrompt: string, maxOutputTokens: number): number {
     const available = this.config.llmContextWindow - maxOutputTokens - this.tokenizer.count(basePrompt);
     return Math.max(0, Math.floor(available * (1 - this.config.summarySafetyRatio)));
   }
 
+  /**
+   * 检查提示词是否满足当前模型的输入预算。
+   *
+   * @param prompt 发送给模型的提示词。
+   * @param maxOutputTokens 为模型输出预留的 Token 上限。
+   * @returns 条件是否满足的判断结果。
+   */
   private promptFits(prompt: string, maxOutputTokens: number): boolean {
     return this.tokenizer.count(prompt) + maxOutputTokens <= this.config.llmContextWindow;
   }
 
+  /**
+   * 在阶段开始前检查取消信号，避免继续无效工作。
+   *
+   * @param signal 取消信号，用于中止请求和后台处理（可选）。
+   */
   private throwIfAborted(signal?: AbortSignal): void {
     signal?.throwIfAborted();
   }
 }
 
+/**
+ * 组合最终摘要请求、文档信息和待汇总内容。
+ *
+ * @param input 本次操作的输入数据。
+ * @param source 当前来源内容或来源记录。
+ * @param sourceIsPartialSummaries 当前输入是否只覆盖部分来源的摘要。
+ * @returns 整理后的文本或标识。
+ */
 function buildFinalPrompt(
   input: DocumentSummaryInput,
   source: string,
@@ -304,6 +385,15 @@ function buildFinalPrompt(
   ].join('\n');
 }
 
+/**
+ * 为单个原文分块生成摘要提示词。
+ *
+ * @param input 本次操作的输入数据。
+ * @param chunk 当前索引分块。
+ * @param index 当前条目或块的序号。
+ * @param total 符合条件的条目总数。
+ * @returns 整理后的文本或标识。
+ */
 function buildMapPrompt(
   input: DocumentSummaryInput,
   chunk: Chunk,
@@ -326,6 +416,16 @@ function buildMapPrompt(
   ].join('\n');
 }
 
+/**
+ * 为多份中间摘要生成归并提示词。
+ *
+ * @param input 本次操作的输入数据。
+ * @param items 需要处理的条目集合。
+ * @param level 当前标题或分类的层级。
+ * @param index 当前条目或块的序号。
+ * @param total 符合条件的条目总数。
+ * @returns 整理后的文本或标识。
+ */
 function buildReducePrompt(
   input: DocumentSummaryInput,
   items: SummaryItem[],
@@ -347,18 +447,37 @@ function buildReducePrompt(
   ].join('\n');
 }
 
+/**
+ * 将中间摘要按来源顺序整理为带标记的文本。
+ *
+ * @param items 需要处理的条目集合。
+ * @returns 整理后的文本或标识。
+ */
 function formatSummaryItems(items: SummaryItem[]): string {
   return items
     .map((item, index) => `## 摘要 ${index + 1}：${item.label}\n${item.content}`)
     .join('\n\n');
 }
 
+/**
+ * 生成摘要分块的来源标签，便于汇总时追踪原文。
+ *
+ * @param chunk 当前索引分块。
+ * @param index 当前条目或块的序号。
+ * @returns 整理后的文本或标识。
+ */
 function chunkLabel(chunk: Chunk, index: number): string {
   return chunk.heading_path.length
     ? chunk.heading_path.join(' > ')
     : `无标题分段 ${index + 1}`;
 }
 
+/**
+ * 识别主动取消引起的异常。
+ *
+ * @param error 本次操作捕获的异常。
+ * @returns 条件是否满足的判断结果。
+ */
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError');
 }

@@ -1,3 +1,6 @@
+/**
+ * @file 文章互动存储。读写点赞、收藏和评论记录，计算统计数并支持分页。
+ */
 import { Injectable } from "@nestjs/common";
 import type { EntityManager } from "typeorm";
 import { DatabaseService } from "../database/database.service.js";
@@ -30,8 +33,19 @@ export class ArticleInteractionsRepository {
       created_at: Date;
     }
   >();
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param database 共享数据库服务。
+   */
   constructor(readonly database: DatabaseService) {}
 
+  /**
+   * 统计文章的点赞、收藏和评论数量。
+   *
+   * @param id 目标记录的唯一标识。
+   * @returns ArticleStats 类型的处理结果。
+   */
   async stats(id: string): Promise<ArticleStats> {
     if (!this.database.metadataEnabled) {
       const reactions = [...this.reactions.values()].filter(
@@ -62,6 +76,13 @@ export class ArticleInteractionsRepository {
       comment_count: Number(comments[0]?.total ?? 0),
     };
   }
+  /**
+   * 查询当前用户拥有的记录或互动状态。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param userId 当前用户标识。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async mine(id: string, userId: string) {
     const rows = this.database.metadataEnabled
       ? await this.database.query<{ kind: string }>(
@@ -77,6 +98,15 @@ export class ArticleInteractionsRepository {
       favorited: rows.some((r) => r.kind === "favorite"),
     };
   }
+  /**
+   * 新增或取消当前用户的点赞、收藏状态。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param userId 当前用户标识。
+   * @param kind 当前结果或来源的分类。
+   * @param active 是否启用或激活当前记录。
+   * @param manager 当前数据库事务执行器（可选）。
+   */
   async react(
     id: string,
     userId: string,
@@ -107,6 +137,13 @@ export class ArticleInteractionsRepository {
       if (!active) this.reactions.delete(key);
     }
   }
+  /**
+   * 读取指定评论，供回复或删除权限校验使用。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param manager 当前数据库事务执行器（可选）。
+   * @returns ArticleComment 类型的处理结果；未找到或不可用时可能为空。
+   */
   async comment(
     id: string,
     manager?: EntityManager,
@@ -120,6 +157,12 @@ export class ArticleInteractionsRepository {
       ? { ...rows[0], created_at: new Date(rows[0].created_at) }
       : null;
   }
+  /**
+   * 校验评论目标后保存评论或回复。
+   *
+   * @param comment 用户提交的评论或反馈说明。
+   * @param manager 当前数据库事务执行器（可选）。
+   */
   async addComment(comment: ArticleComment, manager?: EntityManager) {
     if (this.database.metadataEnabled)
       await (manager ?? this.database).query(
@@ -135,6 +178,12 @@ export class ArticleInteractionsRepository {
       );
     else this.comments.set(comment.comment_id, comment);
   }
+  /**
+   * 校验评论归属后移除评论及相应关联数据。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param manager 当前数据库事务执行器（可选）。
+   */
   async removeComment(id: string, manager?: EntityManager) {
     if (this.database.metadataEnabled)
       await (manager ?? this.database).query(
@@ -151,6 +200,12 @@ export class ArticleInteractionsRepository {
         });
     }
   }
+  /**
+   * 清理文章删除时关联的互动记录。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param manager 当前数据库事务执行器（可选）。
+   */
   async deleteForArticle(id: string, manager?: EntityManager) {
     if (this.database.metadataEnabled) {
       await (manager ?? this.database).query(
@@ -168,6 +223,12 @@ export class ArticleInteractionsRepository {
         if (reaction.article_id === id) this.reactions.delete(key);
     }
   }
+  /**
+   * 计算指定评论的回复数量。
+   *
+   * @param id 目标记录的唯一标识。
+   * @returns 计算得到的数值。
+   */
   async replyCount(id: string) {
     if (!this.database.metadataEnabled)
       return [...this.comments.values()].filter(
@@ -179,6 +240,15 @@ export class ArticleInteractionsRepository {
     );
     return Number(rows[0]?.total ?? 0);
   }
+  /**
+   * 按文章或父评论条件分页读取评论。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param page 当前页码或页面记录。
+   * @param size 本次批量处理或页面读取的数量。
+   * @param parentId parent 对应的唯一标识。
+   * @returns 当前页条目与符合条件的总数。
+   */
   async listComments(
     id: string,
     page: number,
@@ -226,6 +296,14 @@ export class ArticleInteractionsRepository {
       total: Number(count[0]?.total ?? 0),
     };
   }
+  /**
+   * 分页读取当前用户收藏的文章。
+   *
+   * @param userId 当前用户标识。
+   * @param page 当前页码或页面记录。
+   * @param size 本次批量处理或页面读取的数量。
+   * @returns 当前页条目与符合条件的总数。
+   */
   async favorites(userId: string, page: number, size: number) {
     const where = `r.user_id=? AND r.kind='favorite' AND d.visibility='public' AND d.source_type IN ('article','public_article')
       AND NOT EXISTS (SELECT 1 FROM article_drafts a WHERE a.article_id=d.doc_id AND a.state<>'published')`;

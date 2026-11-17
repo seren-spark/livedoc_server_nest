@@ -1,3 +1,6 @@
+/**
+ * @file 文档记忆任务队列。管理记忆提取任务的入队、领取、失效、完成和重试。
+ */
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { AccessContext } from '../../common/types.js';
@@ -18,6 +21,13 @@ export class DocumentMemoryJobsService {
   private readonly store: PersistentJobStore<DocumentMemoryJobRecord>;
   private readonly repository: DocumentMemoryJobRepository;
 
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param database 共享数据库服务。
+   * @param profiles DocumentMemoryService 依赖实例。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly database: DatabaseService,
@@ -35,6 +45,13 @@ export class DocumentMemoryJobsService {
     });
   }
 
+  /**
+   * 对记忆提取任务做重复检查后提交后台任务。
+   *
+   * @param document 当前知识文档记录。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 文档记忆提取任务；未找到或不可用时可能为空。
+   */
   async enqueue(
     document: DocumentRecord,
     context: AccessContext,
@@ -74,24 +91,53 @@ export class DocumentMemoryJobsService {
     return job;
   }
 
+  /**
+   * 领取下一条可执行任务，并取得对应执行代次与租约。
+   *
+   * @param workerId 当前执行 Worker 的标识。
+   * @returns 文档记忆提取任务；未找到或不可用时可能为空。
+   */
   async claimNext(workerId: string): Promise<DocumentMemoryJobRecord | null> {
     return this.store.claimNext(workerId);
   }
 
+  /**
+   * 将当前执行任务标记为成功，并保存结果状态。
+   *
+   * @param job 当前后台任务记录。
+   */
   async succeed(job: DocumentMemoryJobRecord): Promise<void> {
     await this.store.finish(job.job_id, 'succeeded');
   }
 
+  /**
+   * 判断记录或任务是否仍处于有效运行状态。
+   *
+   * @param job 当前后台任务记录。
+   * @returns 条件是否满足的判断结果。
+   */
   async isActive(job: DocumentMemoryJobRecord): Promise<boolean> {
     return this.store.isRunning(job.job_id, job.generation);
   }
 
+  /**
+   * 将已被新版本替代的任务标记为失效。
+   *
+   * @param job 当前后台任务记录。
+   */
   async supersede(job: DocumentMemoryJobRecord): Promise<void> {
     await this.store.finish(job.job_id, 'superseded', {
       error: 'A newer document version exists',
     });
   }
 
+  /**
+   * 记录任务失败原因，并根据剩余次数安排重试或结束。
+   *
+   * @param job 当前后台任务记录。
+   * @param error 本次操作捕获的异常。
+   * @returns 条件是否满足的判断结果。
+   */
   async fail(job: DocumentMemoryJobRecord, error: string): Promise<boolean> {
     const terminal = job.attempts >= job.max_attempts;
     const delays = [30, 120, 600];
@@ -103,6 +149,11 @@ export class DocumentMemoryJobsService {
     return terminal;
   }
 
+  /**
+   * 取消指定文档尚未结束的后台任务。
+   *
+   * @param docId 知识文档标识。
+   */
   async cancelDocument(docId: string): Promise<void> {
     await this.store.cancelWhere({
       whereSql: 'doc_id=?',
@@ -111,6 +162,11 @@ export class DocumentMemoryJobsService {
     });
   }
 
+  /**
+   * 删除指定文档对应的数据及关联记录。
+   *
+   * @param docId 知识文档标识。
+   */
   async deleteDocument(docId: string): Promise<void> {
     await this.store.deleteWhere({
       whereSql: 'doc_id=?',

@@ -1,3 +1,6 @@
+/**
+ * @file AI 写作接口。接收写作请求，将生成事件以 SSE 发送给前端。
+ */
 import {
   BadRequestException,
   Body,
@@ -17,11 +20,25 @@ import { AiWriterService } from './ai-writer.service.js';
 
 @Controller('ai')
 export class AiController {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param writer AiWriterService 依赖实例。
+   * @param config 应用运行配置。
+   */
   constructor(
     private readonly writer: AiWriterService,
     private readonly config: AppConfig,
   ) {}
 
+  /**
+   * 连接写作生成器与 SSE 响应，并将客户端断开传播为取消信号。
+   *
+   * @param request 当前业务请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param rawRequest 当前 Fastify HTTP 请求。
+   * @param reply 用于写回 HTTP 或 SSE 数据的响应对象。
+   */
   @Post('write')
   @HttpCode(HttpStatus.OK)
   async write(

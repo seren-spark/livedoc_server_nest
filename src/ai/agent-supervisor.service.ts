@@ -1,3 +1,6 @@
+/**
+ * @file 计划调度。根据依赖、已完成步骤和剩余额度，决定派发、补查、澄清或汇总。
+ */
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { Ajv } from "ajv";
@@ -97,11 +100,22 @@ const schema = {
 @Injectable()
 export class AgentSupervisorService {
   private readonly validDecision = new Ajv({ strict: false }).compile(schema);
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param runtime AgentRuntimeService 依赖实例。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly runtime: AgentRuntimeService,
   ) {}
 
+  /**
+   * 初始化计划执行追踪，记录决策、补查次数和资源用量。
+   *
+   * @returns 计划调度追踪。
+   */
   createTrace(): SupervisorTrace {
     return {
       status: "running",
@@ -112,11 +126,21 @@ export class AgentSupervisorService {
     };
   }
 
+  /**
+   * 在工具调用预算中为汇总和修复预留额度，计算允许的计划步数。
+   *
+   * @returns 计算得到的数值。
+   */
   maxPlanSteps() {
     // Each serial step needs a dispatch, one read and a handoff; reserve finalization and one repair.
     return maxAgentPlanSteps(this.config.agentMaxToolCalls);
   }
 
+  /**
+   * 检查计划步数是否落在当前执行预算内。
+   *
+   * @param plan 待校验或执行的任务计划。
+   */
   assertPlanFits(plan: ExecutionPlan) {
     if (plan.steps.length > this.maxPlanSteps())
       throw new BadRequestException(
@@ -125,6 +149,12 @@ export class AgentSupervisorService {
   }
 
   // All task state belongs to this root request, never to the singleton provider.
+  /**
+   * 在当前请求独立维护的状态中调度计划步骤，直到汇总、澄清或停止。
+   *
+   * @param input 本次操作的输入数据。
+   * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+   */
   async run(
     input: SupervisorInput,
   ): Promise<Extract<AgentResult, { kind: "clarification" }> | undefined> {
@@ -132,6 +162,11 @@ export class AgentSupervisorService {
     const { signal } = environment;
     const steps = structuredClone(input.plan.steps);
     const pending = new Set(steps.map((step) => step.id));
+    /**
+     * 发送带 Supervisor 身份的步骤进度事件。
+     *
+     * @param data 当前事件或操作携带的数据。
+     */
     const emit = (data: Record<string, unknown>) => {
       if (!signal.aborted)
         environment.emit("step", {
@@ -221,6 +256,13 @@ export class AgentSupervisorService {
     }
   }
 
+  /**
+   * 从待执行步骤中选取依赖已满足、可一同派发的任务。
+   *
+   * @param input 本次操作的输入数据。
+   * @param batch 当前批次需要处理的输入。
+   * @param pending 尚未完成的必要步骤。
+   */
   private async batch(
     input: SupervisorInput,
     batch: Step[],
@@ -281,6 +323,15 @@ export class AgentSupervisorService {
     }
   }
 
+  /**
+   * 根据任务进度、证据缺口和预算选择下一步调度动作。
+   *
+   * @param input 本次操作的输入数据。
+   * @param steps 执行计划中的步骤集合。
+   * @param pending 尚未完成的必要步骤。
+   * @param ready 依赖已满足的待派发步骤。
+   * @returns 下一步任务调度决策。
+   */
   async decide(
     input: SupervisorInput,
     steps: Step[],
@@ -411,6 +462,15 @@ export class AgentSupervisorService {
     }
   }
 
+  /**
+   * 检查调度决策的步骤是否就绪、依赖是否满足及是否允许最终汇总。
+   *
+   * @param decision Supervisor 给出的下一步调度决策。
+   * @param input 本次操作的输入数据。
+   * @param steps 执行计划中的步骤集合。
+   * @param pending 尚未完成的必要步骤。
+   * @param ready 依赖已满足的待派发步骤。
+   */
   private validate(
     decision: SupervisorDecision,
     input: SupervisorInput,

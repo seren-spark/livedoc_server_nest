@@ -1,3 +1,6 @@
+/**
+ * @file 会话写作约束。从用户输入中提取并合并当前会话约束，控制写入版本和提示词预算。
+ */
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { getEncoding } from 'js-tiktoken';
@@ -9,13 +12,31 @@ import type { AgentMessage, DocumentIdentity } from './document-agent.types.js';
 import { AgentExecutionError } from './agent-execution.js';
 import { ConversationConstraintsRepository, type ConstraintScope, type ConstraintSnapshot } from './conversation-constraints.repository.js';
 
+/**
+ * 计算文本摘要，用作内容指纹或幂等标识。
+ *
+ * @param text 待处理的文本。
+ * @returns 整理后的文本或标识。
+ */
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+/**
+ * 将不同类型的编辑文档身份转换为稳定的会话约束键。
+ *
+ * @param identity 当前文稿类型及其稳定身份。
+ * @returns 整理后的文本或标识。
+ */
 export function constraintDocumentKey(identity: DocumentIdentity): string {
   const id = identity.kind === 'knowledge' ? identity.doc_id
     : identity.kind === 'article' ? identity.article_id
     : identity.kind === 'import' ? identity.import_id : identity.local_id;
   return `${identity.kind}:${id}`;
 }
+/**
+ * 生成 Agent 会话记忆使用的文档标识。
+ *
+ * @param identity 当前文稿类型及其稳定身份。
+ * @returns 整理后的文本或标识。
+ */
 export function agentMemoryDocumentId(identity: DocumentIdentity): string {
   return identity.kind === 'knowledge' ? identity.doc_id : `agent:${hash(constraintDocumentKey(identity))}`;
 }
@@ -25,11 +46,28 @@ export type ConstraintTurn = (messages: AgentMessage[]) => Promise<AgentMessage>
 export class ConversationConstraintsService {
   readonly repository: ConversationConstraintsRepository;
   private readonly tokenizer;
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param database 共享数据库服务。
+   */
   constructor(private readonly config: AppConfig, database: DatabaseService) {
     this.repository = new ConversationConstraintsRepository(database);
     this.tokenizer = getEncoding(config.tokenizerEncoding as Parameters<typeof getEncoding>[0]);
   }
 
+  /**
+   * 按用户、会话与编辑文档隔离约束，去重本轮输入并提取约束变化。
+   *
+   * @param request 包含写作需求、编辑器快照和参考资料的 Agent 请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param inputId input 对应的唯一标识。
+   * @param turn 执行模型调用的回调或当前问答轮次。
+   * @param signal 取消信号，用于中止请求和后台处理。
+   * @param text 待处理的文本。
+   * @returns ConstraintSnapshot 类型的处理结果。
+   */
   async prepare(request: DocumentAgentDto, context: AccessContext, inputId: string,
     turn: ConstraintTurn, signal: AbortSignal, text = request.query): Promise<ConstraintSnapshot> {
     if (!this.config.conversationConstraintsEnabled) return { revision: 0, items: [] };
@@ -67,6 +105,15 @@ export class ConversationConstraintsService {
     }
   }
 
+  /**
+   * 校验约束增删项后合并到当前会话状态。
+   *
+   * @param previous 更新前的状态。
+   * @param delta 需要应用到当前状态的增删变化。
+   * @param input 本次操作的输入数据。
+   * @param sourceId source 对应的唯一标识。
+   * @returns ConstraintSnapshot 类型的处理结果。
+   */
   private apply(previous: ConstraintSnapshot, delta: any, input: string, sourceId: string): ConstraintSnapshot {
     if (!delta || (!Array.isArray(delta.upsert) && !Array.isArray(delta.remove)))
       throw new Error('Invalid constraint delta');
@@ -75,6 +122,12 @@ export class ConversationConstraintsService {
       throw new Error('Invalid constraint delta');
     const items = new Map(previous.items.map((item) => [item.id, item]));
     const changed = new Set<string>();
+    /**
+     * 把约束信息整理成提示词中的数据区，供后续写作使用。
+     *
+     * @param value 待校验或转换的值。
+     * @returns 整理后的文本或标识。
+     */
     const quote = (value: unknown): string => {
       if (typeof value !== 'string' || !value.trim() || !input.includes(value)) throw new Error('Missing user provenance');
       return value;
@@ -101,10 +154,22 @@ export class ConversationConstraintsService {
     return next;
   }
 
+  /**
+   * 使用当前模型的分词器计算文本的 Token 数。
+   *
+   * @param snapshot 任务开始时保存的文档或配置快照。
+   * @returns 计算得到的数值。
+   */
   tokenCount(snapshot: ConstraintSnapshot): number {
     return snapshot.items.length ? this.tokenizer.encode(JSON.stringify(snapshot)).length : 0;
   }
 
+  /**
+   * 删除指定文档对应的数据及关联记录。
+   *
+   * @param docId 知识文档标识。
+   * @param kind 当前结果或来源的分类。
+   */
   async deleteDocument(docId: string, kind: 'knowledge' | 'import' = 'knowledge'): Promise<void> {
     await this.repository.deleteDocument(`${kind}:${docId}`);
   }

@@ -1,9 +1,18 @@
+/**
+ * @file 模型路由。按角色、能力和上下文窗口挑选模型，维护降级与故障冷却状态。
+ */
 import { createHash } from 'node:crypto';
 import type { AppConfig } from '../config/app-config.js';
 import { AgentExecutionError } from './agent-execution.js';
 
 export type ModelRole = 'main' | 'classifier' | 'plan' | 'critic' | 'researcher' | 'web_summary' | 'research_compressor' | 'writer' | 'coverage';
 const researchFallback = { researcher: 'main', web_summary: 'plan', research_compressor: 'plan', writer: 'main', coverage: 'critic' } as const;
+/**
+ * 判断该角色是否应使用主写作模型。
+ *
+ * @param role 本次模型或 Worker 执行角色（可选）。
+ * @returns 条件是否满足的判断结果。
+ */
 export const mainModelRole = (role?: ModelRole) => !role || ['main', 'researcher', 'writer'].includes(role);
 export interface AgentModelOptions {
   role?: ModelRole;
@@ -38,6 +47,12 @@ interface CircuitState { failures: number; openUntil: number; probing: boolean }
 const legacyRoles: ModelRole[] = ['main', 'classifier', 'plan', 'critic'];
 const roles: ModelRole[] = [...legacyRoles, 'researcher', 'web_summary', 'research_compressor', 'writer', 'coverage'];
 const controlledFields = new Set(['model', 'messages', 'tools', 'tool_choice', 'stream', 'max_tokens', 'response_format', 'headers', 'api_key']);
+/**
+ * 判断未知输入是否为非空且非数组的对象。
+ *
+ * @param value 待校验或转换的值。
+ * @returns 条件是否满足的判断结果。
+ */
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 
 /** OpenAI-compatible deployment routing. Circuit state is bounded by configured profiles and process-local. */
@@ -45,6 +60,11 @@ export class ModelRouter {
   private readonly profiles = new Map<string, ModelProfile>();
   private readonly routes = new Map<ModelRole, string[]>();
   private readonly circuits = new Map<string, CircuitState>();
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   */
   constructor(private readonly config: AppConfig) {
     for (const [alias, raw] of Object.entries(config.llmModelProfiles)) {
       if (!/^[A-Za-z0-9_.-]{1,80}$/.test(alias) || !object(raw) || typeof raw.model !== 'string' || !raw.model.trim())
@@ -93,6 +113,12 @@ export class ModelRouter {
       throw new Error('LLM circuit threshold or cooldown is invalid');
   }
 
+  /**
+   * 将旧版单模型设置转换为当前路由配置。
+   *
+   * @param role 本次模型或 Worker 执行角色。
+   * @returns ModelProfile 类型的处理结果。
+   */
   private legacy(role: ModelRole): ModelProfile {
     const model = role === 'classifier' ? this.config.agentClassifierModel : role === 'plan'
       ? this.config.agentPlanModel : role === 'critic' ? this.config.agentCriticModel : this.config.llmModel;
@@ -103,17 +129,37 @@ export class ModelRouter {
       contextWindow: this.config.llmContextWindow, timeoutSeconds: this.config.llmTimeoutSeconds };
   }
 
+  /**
+   * 列出指定角色可使用的候选模型配置。
+   *
+   * @param role 本次模型或 Worker 执行角色。
+   * @returns 整理后的结果列表。
+   */
   private candidates(role: ModelRole): ModelProfile[] {
     const fallback = role in researchFallback ? researchFallback[role as keyof typeof researchFallback] : role;
     const names = this.routes.get(role) ?? this.routes.get(fallback) ?? this.routes.get('main');
     return names ? names.map((name) => this.profiles.get(name)!) : [this.legacy(fallback)];
   }
 
+  /**
+   * 判断模型是否已配置且不处于故障冷却期。
+   *
+   * @param profile 模型配置或文档记忆档案。
+   * @returns 条件是否满足的判断结果。
+   */
   private available(profile: ModelProfile): boolean {
     const circuit = this.circuits.get(profile.id);
     return !circuit || (circuit.openUntil <= Date.now() && !circuit.probing);
   }
 
+  /**
+   * 检查当前配置与已保存任务的运行条件是否兼容。
+   *
+   * @param profile 模型配置或文档记忆档案。
+   * @param options 控制本次行为的可选配置。
+   * @param toolsCount 本次提供给模型的工具数量。
+   * @returns 条件是否满足的判断结果。
+   */
   private compatible(profile: ModelProfile, options: AgentModelOptions, toolsCount: number): boolean {
     if ((toolsCount > 0 && !profile.tools) || (options.json && !profile.json)) return false;
     if (!profile.profile) return true;
@@ -122,18 +168,42 @@ export class ModelRouter {
     return thinking ? profile.thinkingMode !== 'off' : profile.thinkingMode !== 'always_on';
   }
 
+  /**
+   * 检查指定模型配置是否完整。
+   *
+   * @param role 本次模型或 Worker 执行角色。
+   * @returns 条件是否满足的判断结果。
+   */
   configured(role: ModelRole = 'main'): boolean {
     return this.candidates(role).some((profile) => Boolean(profile.apiKey));
   }
 
+  /**
+   * 返回当前配置的主要写作模型标识。
+   *
+   * @returns 整理后的文本或标识。
+   */
   mainModel(): string {
     const candidates = this.candidates('main');
     return (candidates.find((profile) => profile.apiKey) ?? candidates[0])!.model;
   }
+  /**
+   * 判断所选模型是否具备可配置的思考能力。
+   *
+   * @returns 条件是否满足的判断结果。
+   */
   thinkingSupported(): boolean {
     return this.candidates('main').some((profile) => Boolean(profile.apiKey) && profile.thinkingMode !== 'off');
   }
 
+  /**
+   * 按角色、能力与上下文大小选择可用模型。
+   *
+   * @param options 控制本次行为的可选配置。
+   * @param toolsCount 本次提供给模型的工具数量。
+   * @param excluded 本次应排除的条目集合。
+   * @returns ModelProfile 类型的处理结果。
+   */
   select(options: AgentModelOptions = {}, toolsCount = 0, excluded: string[] = []): ModelProfile {
     const candidates = options.profile
       ? [this.profiles.get(options.profile)].filter((profile): profile is ModelProfile => Boolean(profile))
@@ -147,12 +217,22 @@ export class ModelRouter {
     throw new AgentExecutionError('MODEL_CAPABILITY_UNSUPPORTED', '当前路由没有满足工具、JSON 或思考开关要求的模型');
   }
 
+  /**
+   * 读取默认主写作模型的配置。
+   *
+   * @returns ModelProfile 类型的处理结果。
+   */
   defaultMain(): ModelProfile {
     const selected = this.candidates('main').find((profile) => profile.apiKey && this.available(profile));
     if (selected) return selected;
     return this.select();
   }
 
+  /**
+   * 选择用于能力验证的模型配置。
+   *
+   * @returns 整理后的文本或标识；未找到或不可用时可能为空。
+   */
   verificationProfile(): string | undefined {
     const profiles = this.candidates('main');
     if (!profiles[0]?.profile) return undefined;
@@ -161,14 +241,30 @@ export class ModelRouter {
     return selected.profile;
   }
 
+  /**
+   * 在调用开始前检查模型冷却状态，并标记需要探测恢复的模型。
+   *
+   * @param profile 模型配置或文档记忆档案。
+   */
   begin(profile: ModelProfile): void {
     if (!this.available(profile)) throw new AgentExecutionError('UPSTREAM_CIRCUIT_OPEN', '当前模型正在冷却，请稍后重试', true);
     const state = this.circuits.get(profile.id);
     if (state?.openUntil) state.probing = true;
   }
 
+  /**
+   * 记录本次模型调用成功，更新路由健康状态。
+   *
+   * @param profile 模型配置或文档记忆档案。
+   */
   succeeded(profile: ModelProfile): void { this.circuits.delete(profile.id); }
 
+  /**
+   * 记录模型失败及冷却状态，供后续路由选择使用。
+   *
+   * @param profile 模型配置或文档记忆档案。
+   * @param error 本次操作捕获的异常。
+   */
   failed(profile: ModelProfile, error: unknown): void {
     const state = this.circuits.get(profile.id) ?? { failures: 0, openUntil: 0, probing: false };
     state.probing = false;
@@ -183,17 +279,35 @@ export class ModelRouter {
     this.circuits.set(profile.id, state);
   }
 
+  /**
+   * 根据当前输入生成稳定指纹，用于识别配置或内容变化。
+   *
+   * @returns 整理后的文本或标识。
+   */
   fingerprint(): string {
     return createHash('sha256').update(JSON.stringify({ routes: this.config.agentModelRoutes,
       profiles: [...this.profiles.values()], legacy: legacyRoles.map((role) => this.legacy(role)) })).digest('hex');
   }
 }
 
+/**
+ * 判断失败类型是否适合切换备用模型。
+ *
+ * @param error 本次操作捕获的异常。
+ * @returns 条件是否满足的判断结果。
+ */
 export function canFallbackModel(error: unknown): boolean {
   return error instanceof AgentExecutionError && ['UPSTREAM_QUOTA', 'UPSTREAM_AUTH', 'UPSTREAM_RATE_LIMIT',
     'UPSTREAM_HTTP_ERROR', 'UPSTREAM_TIMEOUT', 'UPSTREAM_NETWORK', 'UPSTREAM_CIRCUIT_OPEN'].includes(error.code);
 }
 
+/**
+ * 将模型 HTTP 状态转换为统一失败类别。
+ *
+ * @param response 上游服务或 HTTP 接口返回的响应。
+ * @param prefix 需要匹配或补入的前缀。
+ * @returns AgentExecutionError 类型的处理结果。
+ */
 export async function modelHttpFailure(response: Response, prefix = '模型服务请求失败'): Promise<AgentExecutionError> {
   let providerCode = '';
   try {

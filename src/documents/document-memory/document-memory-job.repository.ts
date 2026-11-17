@@ -1,3 +1,6 @@
+/**
+ * @file 文档记忆任务存储。保存提取任务与去重标识，将数据库行映射为任务对象。
+ */
 import { DatabaseService } from '../../database/database.service.js';
 import type { DocumentMemoryJobRecord } from './document-memory.types.js';
 
@@ -6,8 +9,19 @@ const JOB_COLUMNS = `job_id,doc_id,document_version,generation,status,attempts,m
   error,created_at,started_at,finished_at,updated_at`;
 
 export class DocumentMemoryJobRepository {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param database 共享数据库服务。
+   */
   constructor(private readonly database: DatabaseService) {}
 
+  /**
+   * 对记忆提取任务做重复检查后提交后台任务。
+   *
+   * @param job 当前后台任务记录。
+   * @returns 文档记忆提取任务。
+   */
   async enqueue(job: DocumentMemoryJobRecord): Promise<DocumentMemoryJobRecord> {
     try {
       return await this.database.transaction(async (manager) => {
@@ -71,6 +85,12 @@ export class DocumentMemoryJobRepository {
     }
   }
 
+  /**
+   * 按幂等键查询已存在的任务，避免重复创建。
+   *
+   * @param dedupeKey dedupeKey 参数（string | null）。
+   * @returns 文档记忆提取任务；未找到或不可用时可能为空。
+   */
   private async findByDedupeKey(dedupeKey: string | null): Promise<DocumentMemoryJobRecord | null> {
     const rows = await this.database.query<Record<string, unknown>>(
       `SELECT ${JOB_COLUMNS} FROM document_memory_jobs WHERE dedupe_key=? LIMIT 1`,
@@ -80,7 +100,19 @@ export class DocumentMemoryJobRepository {
   }
 }
 
+/**
+ * 将数据库行转换为文档记忆提取任务。
+ *
+ * @param row 数据库查询返回的一行数据。
+ * @returns 文档记忆提取任务。
+ */
 export function mapMemoryJob(row: Record<string, unknown>): DocumentMemoryJobRecord {
+  /**
+   * 把数据库时间值转换为 Date 对象，并处理空值。
+   *
+   * @param value 待校验或转换的值。
+   * @returns 时间对象；未找到或不可用时可能为空。
+   */
   const date = (value: unknown) => value == null ? null : new Date(value as string | Date);
   return {
     job_id: String(row.job_id),

@@ -1,3 +1,6 @@
+/**
+ * @file 演示知识文档。提供用于本地体验的文档内容及演示资料的可见性判断。
+ */
 import type { AccessContext } from '../common/types.js';
 import type { DocumentIndexRequest } from './document.types.js';
 
@@ -271,6 +274,13 @@ export const DEMO_DOCUMENTS: DocumentIndexRequest[] = DEMO_DOCUMENT_INPUTS.map(
   }),
 );
 
+/**
+ * 判断演示文档是否对当前访问身份可见。
+ *
+ * @param document 当前知识文档记录。
+ * @param context 当前用户、空间与团队身份，用于权限校验。
+ * @returns 条件是否满足的判断结果。
+ */
 export function isDemoDocumentVisibleTo(
   document: DocumentIndexRequest,
   context: AccessContext,

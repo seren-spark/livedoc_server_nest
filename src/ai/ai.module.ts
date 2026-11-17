@@ -1,3 +1,6 @@
+/**
+ * @file AI 业务模块。注册写作服务、文档 Agent、工具及相关控制器的依赖。
+ */
 import { AgentRuntimeService } from './agent-runtime.service.js';
 import { AgentSupervisorService } from './agent-supervisor.service.js';
 import { WikiModule } from '../wiki/wiki.module.js';

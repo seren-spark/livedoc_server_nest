@@ -1,3 +1,6 @@
+/**
+ * @file 文章请求校验。约束草稿保存、发布信息和互动请求字段。
+ */
 import {
   ArrayMaxSize,
   IsArray,

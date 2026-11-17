@@ -1,3 +1,6 @@
+/**
+ * @file 知识文档存储。读写文档正文与版本快照，分页筛选列表并维护索引状态。
+ */
 import type { AccessContext, IndexStatus, KnowledgeScope, Visibility } from '../common/types.js';
 import { DatabaseService } from '../database/database.service.js';
 import type { DocumentRecord } from './document.types.js';
@@ -20,8 +23,20 @@ const DOCUMENT_COLUMNS = `category_id,deleted_at,delete_batch_id,doc_id,space_id
   active_index_version,latest_index_job_id,chunk_count,indexed_at,index_error,created_at,updated_at`;
 
 export class DocumentsRepository {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param database 共享数据库服务。
+   */
   constructor(private readonly database: DatabaseService) {}
 
+  /**
+   * 读取知识范围中有效文档的版本信息。
+   *
+   * @param scope 本次检索或操作允许覆盖的范围。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 整理后的结果列表。
+   */
   async knowledgeVersions(scope: KnowledgeScope, context: AccessContext): Promise<KnowledgeDocumentVersion[]> {
     const domains: string[] = [];
     const params: unknown[] = [];
@@ -48,6 +63,12 @@ export class DocumentsRepository {
     );
   }
 
+  /**
+   * 保存当前文档版本的内容快照。
+   *
+   * @param record 当前知识文档记录。
+   * @param manager 当前数据库事务执行器。
+   */
   async saveSnapshot(record: DocumentRecord, manager: EntityManager): Promise<void> {
     await manager.query(`INSERT INTO knowledge_documents
       (doc_id,space_id,title,content,visibility,source_type,tags,team_id,owner_id,url,editor_content,source_import_id,
@@ -63,6 +84,11 @@ export class DocumentsRepository {
         record.indexed_at,record.index_error,record.created_at,record.updated_at]);
   }
 
+  /**
+   * 向存储写入新的知识文档。
+   *
+   * @param record 当前知识文档记录。
+   */
   async insert(record: DocumentRecord): Promise<void> {
     await this.database.query(
       `INSERT INTO knowledge_documents
@@ -74,6 +100,15 @@ export class DocumentsRepository {
     );
   }
 
+  /**
+   * 按查询条件读取知识文档列表。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param page 当前页码或页面记录。
+   * @param pageSize 每页返回的条目数。
+   * @param filters 查询列表时使用的筛选条件。
+   * @returns 当前页条目与符合条件的总数。
+   */
   async list(
     context: AccessContext,
     page: number,
@@ -98,6 +133,14 @@ export class DocumentsRepository {
     return this.page(clauses.join(' AND '), params, page, pageSize);
   }
 
+  /**
+   * 按筛选条件分页读取公开文档。
+   *
+   * @param page 当前页码或页面记录。
+   * @param pageSize 每页返回的条目数。
+   * @param query 用户问题或检索查询（可选）。
+   * @returns 当前页条目与符合条件的总数。
+   */
   async listPublic(
     page: number,
     pageSize: number,
@@ -115,6 +158,12 @@ export class DocumentsRepository {
       '(SELECT a.published_at FROM article_drafts a WHERE a.article_id=knowledge_documents.doc_id)');
   }
 
+  /**
+   * 按唯一标识读取存储记录。
+   *
+   * @param docId 知识文档标识。
+   * @returns 知识文档记录；未找到或不可用时可能为空。
+   */
   async findById(docId: string): Promise<DocumentRecord | null> {
     const rows = await this.database.query<Record<string, unknown>>(
       `SELECT ${DOCUMENT_COLUMNS} FROM knowledge_documents WHERE doc_id=?`,
@@ -123,6 +172,13 @@ export class DocumentsRepository {
     return rows[0] ? mapDocumentRow(rows[0]) : null;
   }
 
+  /**
+   * 根据请求更新知识文档。
+   *
+   * @param next 当前知识文档记录。
+   * @param expectedVersion 调用方期望操作的内容版本。
+   * @returns 条件是否满足的判断结果。
+   */
   async update(next: DocumentRecord, expectedVersion: number): Promise<boolean> {
     const result = await this.database.source.query(
       `UPDATE knowledge_documents SET title=?,content=?,visibility=?,source_type=?,tags=?,
@@ -152,10 +208,21 @@ export class DocumentsRepository {
     return Number(result?.affectedRows ?? 0) === 1;
   }
 
+  /**
+   * 删除指定知识文档。
+   *
+   * @param docId 知识文档标识。
+   */
   async delete(docId: string): Promise<void> {
     await this.database.query('DELETE FROM knowledge_documents WHERE doc_id=?', [docId]);
   }
 
+  /**
+   * 更新文档的索引状态、版本与任务关联。
+   *
+   * @param record 当前知识文档记录。
+   * @param version 本次操作对应的内容版本（可选）。
+   */
   async updateIndexState(record: DocumentRecord, version?: number): Promise<void> {
     await this.database.query(
       `UPDATE knowledge_documents SET index_status=?,active_index_version=?,latest_index_job_id=?,
@@ -174,6 +241,16 @@ export class DocumentsRepository {
     );
   }
 
+  /**
+   * 从查询结果中整理分页条目和总数。
+   *
+   * @param where 查询或清理使用的筛选条件。
+   * @param params 查询或调用所需的绑定参数。
+   * @param page 当前页码或页面记录。
+   * @param pageSize 每页返回的条目数。
+   * @param publishedOrder 公开条目需要遵守的展示顺序（可选）。
+   * @returns 当前页条目与符合条件的总数。
+   */
   private async page(
     where: string,
     params: unknown[],
@@ -197,6 +274,13 @@ export class DocumentsRepository {
   }
 }
 
+/**
+ * 向数据库查询追加文档筛选条件与绑定参数。
+ *
+ * @param clauses 需要组合的 SQL 条件片段。
+ * @param params 查询或调用所需的绑定参数。
+ * @param filters 查询列表时使用的筛选条件。
+ */
 function appendFilters(
   clauses: string[],
   params: unknown[],
@@ -227,6 +311,12 @@ function appendFilters(
   }
 }
 
+/**
+ * 按插入列的顺序整理文档字段值。
+ *
+ * @param record 当前知识文档记录。
+ * @returns 整理后的结果列表。
+ */
 function documentInsertValues(record: DocumentRecord): unknown[] {
   return [
     record.doc_id,
@@ -246,6 +336,12 @@ function documentInsertValues(record: DocumentRecord): unknown[] {
   ];
 }
 
+/**
+ * 将数据库行转换为知识文档业务记录。
+ *
+ * @param row 数据库查询返回的一行数据。
+ * @returns 知识文档记录。
+ */
 export function mapDocumentRow(row: Record<string, unknown>): DocumentRecord {
   return {
     category_id: row.category_id == null ? null : String(row.category_id),
@@ -275,6 +371,12 @@ export function mapDocumentRow(row: Record<string, unknown>): DocumentRecord {
   };
 }
 
+/**
+ * 解析标签字段，转换为业务使用的字符串数组。
+ *
+ * @param value 待校验或转换的值。
+ * @returns 整理后的字符串列表。
+ */
 function parseTags(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(String);
   if (typeof value !== 'string') return [];
@@ -286,6 +388,12 @@ function parseTags(value: unknown): string[] {
   }
 }
 
+/**
+ * 将 JSON 存储值还原为对象。
+ *
+ * @param value 待校验或转换的值。
+ * @returns Record<string, unknown> 类型的处理结果；未找到或不可用时可能为空。
+ */
 function parseObject(value: unknown): Record<string, unknown> | null {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return value as Record<string, unknown>;

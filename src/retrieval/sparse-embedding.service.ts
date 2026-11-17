@@ -1,3 +1,6 @@
+/**
+ * @file 稀疏向量化。将分词结果编码为词项权重，用于关键词召回。
+ */
 import { Injectable } from "@nestjs/common";
 import * as murmurhash from "murmurhash-js";
 import { tokenizeKeyword } from "./text-utils.js";
@@ -9,6 +12,12 @@ export interface SparseEmbedding {
 
 @Injectable()
 export class SparseEmbeddingService {
+  /**
+   * 对文档分词并编码为稀疏词项权重。
+   *
+   * @param text 待处理的文本。
+   * @returns SparseEmbedding 类型的处理结果。
+   */
   embedDocument(text: string): SparseEmbedding {
     const counts = new Map<string, number>();
     for (const token of this.tokenize(text))
@@ -35,12 +44,14 @@ export class SparseEmbeddingService {
 
   /**
    * 单文本 embedding 复用 batch 接口，取第一个结果
-   * @param text
+   * @param text 待处理的文本。
    * 词袋表示（BM25 模型输出）
    * {
    *  indices: [12, 45, 78, 234],  // 非零维度的索引
    *  values: [0.87, 1.23, 0.56, 2.01]  // 对应的 BM25 权重
    * }
+   *
+   * @returns SparseEmbedding 类型的处理结果。
    */
   embedQuery(text: string): SparseEmbedding {
     const indices = [
@@ -57,6 +68,12 @@ export class SparseEmbeddingService {
     return tokenizeKeyword(text).filter((item) => item.length <= 40);
   }
 
+  /**
+   * 将词项映射为稳定的稀疏向量索引。
+   *
+   * @param token 登录令牌或当前匹配的词项。
+   * @returns 计算得到的数值。
+   */
   private tokenId(token: string): number {
     return murmurhash.murmur3(token) >>> 0;
   }

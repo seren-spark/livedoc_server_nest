@@ -1,3 +1,6 @@
+/**
+ * @file 文章数据协议。定义草稿、发布快照和列表摘要，并提取文章引用的资源。
+ */
 import type { DocumentRecord } from "../documents/document.types.js";
 
 export type ArticleState = "draft" | "published" | "withdrawn";
@@ -27,6 +30,12 @@ export interface ArticleDraft {
   created_at: Date;
   updated_at: Date;
 }
+/**
+ * 判断文章当前是否应作为知识库可检索内容。
+ *
+ * @param article 当前文章草稿或发布记录。
+ * @returns 条件是否满足的判断结果。
+ */
 export function articleInKnowledge(article: ArticleDraft): boolean {
   // Existing publications were indexed before this choice was introduced.
   return article.published_metadata != null && article.published_metadata.include_in_knowledge !== false;
@@ -42,6 +51,12 @@ export interface PublicArticle extends DocumentRecord {
   published_at: Date;
   last_published_at: Date;
 }
+/**
+ * 裁剪文章正文等大字段，生成列表摘要。
+ *
+ * @param content 待处理的正文内容。
+ * @returns 整理后的文本或标识。
+ */
 export function articleSummary(content: string): string {
   return content
     .replace(/```[\s\S]*?```/g, "")
@@ -52,6 +67,12 @@ export function articleSummary(content: string): string {
     .trim()
     .slice(0, 300);
 }
+/**
+ * 收集正文和封面实际引用的资源标识。
+ *
+ * @param content 待处理的正文内容。
+ * @returns 整理后的字符串列表。
+ */
 export function referencedAssets(content: ArticleContent): string[] {
   const ids = new Set<string>();
   for (const match of JSON.stringify([

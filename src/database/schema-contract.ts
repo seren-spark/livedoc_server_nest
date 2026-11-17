@@ -1,3 +1,6 @@
+/**
+ * @file 数据库结构契约。检查必要的表、列和索引，并整理结构不兼容的诊断信息。
+ */
 import { CURRENT_SCHEMA_VERSION } from './migration-version.js';
 
 export const REQUIRED_SCHEMA_COLUMNS = {
@@ -120,6 +123,12 @@ export type SchemaContractProblem = {
 
 type Query = <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T[]>;
 
+/**
+ * 读取数据库结构并逐项检查契约要求。
+ *
+ * @param query 用户问题或检索查询。
+ * @returns 整理后的结果列表。
+ */
 export async function inspectSchemaContract(query: Query): Promise<SchemaContractProblem[]> {
   const problems: SchemaContractProblem[] = [];
   const versions = await query<{ version: string }>(
@@ -170,6 +179,12 @@ export async function inspectSchemaContract(query: Query): Promise<SchemaContrac
   return problems;
 }
 
+/**
+ * 把结构检查问题整理为可阅读的诊断文本。
+ *
+ * @param problems 需要展示或处理的结构校验问题。
+ * @returns 整理后的文本或标识。
+ */
 export function formatSchemaProblems(problems: SchemaContractProblem[]): string {
   return problems
     .map((problem) => problem.kind === 'version'

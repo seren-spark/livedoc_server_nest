@@ -1,3 +1,6 @@
+/**
+ * @file 检索模块。组装分块、稀疏与稠密向量、重排、压缩及向量存储依赖。
+ */
 import { Module } from '@nestjs/common';
 import { InferenceModule } from '../inference/inference.module.js';
 import { ObservabilityModule } from '../observability/observability.module.js';

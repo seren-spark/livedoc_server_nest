@@ -1,3 +1,6 @@
+/**
+ * @file 写作偏好协议。定义偏好项、修改请求及任务使用的偏好快照。
+ */
 import type { AgentMessage } from './document-agent.types.js';
 
 export interface PreferenceItem {

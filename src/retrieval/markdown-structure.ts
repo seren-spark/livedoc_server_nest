@@ -1,3 +1,6 @@
+/**
+ * @file Markdown 结构解析。统一 AST 遍历、受保护范围与句子边界，供分块和压缩复用。
+ */
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { gfmFromMarkdown } from "mdast-util-gfm";
 import { mathFromMarkdown } from "mdast-util-math";
@@ -19,6 +22,12 @@ export interface MarkdownNode {
   identifier?: string;
 }
 
+/**
+ * 将 Markdown 转为统一 AST，支持后续结构分析。
+ *
+ * @param markdown 待解析或写入的 Markdown 原文。
+ * @returns MarkdownNode 类型的处理结果。
+ */
 export function parseMarkdown(markdown: string): MarkdownNode {
   return fromMarkdown(markdown, {
     extensions: [gfm(), math()],
@@ -26,6 +35,12 @@ export function parseMarkdown(markdown: string): MarkdownNode {
   });
 }
 
+/**
+ * 递归遍历 Markdown AST，并把节点交给调用方处理。
+ *
+ * @param node 当前语法树或编辑器节点。
+ * @param visit 访问当前语法树节点的回调。
+ */
 export function walkMarkdown(node: MarkdownNode, visit: (node: MarkdownNode) => void): void {
   visit(node);
   for (const child of node.children ?? []) walkMarkdown(child, visit);
@@ -36,8 +51,20 @@ const INLINE_ATOMS = new Set([
   "footnoteReference", "html",
 ]);
 
+/**
+ * 收集链接、代码等不能在内部随意切断的原文区间。
+ *
+ * @param node 当前语法树或编辑器节点。
+ * @param offset 从原文或分页数据的哪个位置开始读取。
+ * @returns 整理后的结果列表。
+ */
 export function protectedRanges(node: MarkdownNode, offset: number): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
+  /**
+   * 递归收集不可在内部切断的 Markdown 内联节点范围。
+   *
+   * @param child 当前节点的子节点。
+   */
   const visit = (child: MarkdownNode) => {
     if (INLINE_ATOMS.has(child.type)) {
       const start = child.position?.start.offset;
@@ -51,6 +78,13 @@ export function protectedRanges(node: MarkdownNode, offset: number): Array<[numb
   return ranges;
 }
 
+/**
+ * 生成避开受保护区间的句子范围，作为安全切块边界。
+ *
+ * @param text 待处理的文本。
+ * @param protectedSpans 不允许从内部切断的原文区间。
+ * @returns 整理后的结果列表。
+ */
 export function sentenceRanges(
   text: string,
   protectedSpans: Array<[number, number]> = [],

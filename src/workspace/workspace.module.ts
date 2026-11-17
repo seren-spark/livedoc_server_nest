@@ -1,3 +1,6 @@
+/**
+ * @file 工作空间模块。注册分类、回收站和模板服务。
+ */
 import { forwardRef, Module } from "@nestjs/common";
 import { DocumentsModule } from "../documents/documents.module.js";
 import { IndexingModule } from "../indexing/indexing.module.js";

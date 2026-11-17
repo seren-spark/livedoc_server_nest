@@ -1,3 +1,6 @@
+/**
+ * @file 索引任务接口。提供文档索引提交与任务进度查询入口。
+ */
 import { Body, Controller, ForbiddenException, Get, HttpCode, HttpStatus, NotFoundException, Param, Post } from '@nestjs/common';
 import { CurrentAccess } from '../auth/access-context.decorator.js';
 import { DocumentCreateDto, DocumentIndexDto, DocumentUpdateDto } from '../common/dto.js';
@@ -10,12 +13,26 @@ import { IndexJobsService } from './index-jobs.service.js';
 
 @Controller()
 export class IndexingController {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param jobs 后台任务队列服务。
+   * @param documents 需要筛选或处理的文档集合。
+   * @param store VectorStoreService 依赖实例。
+   */
   constructor(
     private readonly jobs: IndexJobsService,
     private readonly documents: DocumentsService,
     private readonly store: VectorStoreService,
   ) {}
 
+  /**
+   * 检查文档归属与版本后提交异步索引任务。
+   *
+   * @param request 当前业务请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 时间对象；未找到或不可用时可能为空。
+   */
   @Post('documents/index')
   @HttpCode(HttpStatus.ACCEPTED)
   async index(@Body() request: DocumentIndexDto, @CurrentAccess() context: AccessContext) {
@@ -61,6 +78,13 @@ export class IndexingController {
     return jobResponse(job);
   }
 
+  /**
+   * 读取指定索引任务，并检查当前用户的访问权限。
+   *
+   * @param jobId 后台任务标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 时间对象；未找到或不可用时可能为空。
+   */
   @Get('index-jobs/:job_id')
   async getJob(@Param('job_id') jobId: string, @CurrentAccess() context: AccessContext) {
     const job = await this.jobs.get(jobId);

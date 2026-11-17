@@ -1,3 +1,6 @@
+/**
+ * @file 索引任务协议。定义索引任务记录、对外响应和任务执行身份。
+ */
 import type { AccessContext, IndexJobStatus } from '../common/types.js';
 import type { DocumentIndexRequest } from '../documents/document.types.js';
 
@@ -24,6 +27,12 @@ export interface IndexJobRecord {
   updated_at: Date;
 }
 
+/**
+ * 裁剪任务内部字段，生成客户端可查询的索引状态。
+ *
+ * @param job 当前索引任务及其执行版本。
+ * @returns 时间对象；未找到或不可用时可能为空。
+ */
 export function jobResponse(job: IndexJobRecord) {
   return {
     job_id: job.job_id,
@@ -39,6 +48,12 @@ export function jobResponse(job: IndexJobRecord) {
   };
 }
 
+/**
+ * 从任务记录还原后台执行所需的访问身份。
+ *
+ * @param job 当前索引任务及其执行版本。
+ * @returns 用户访问身份。
+ */
 export function contextForJob(job: IndexJobRecord): AccessContext {
   return { user_id: job.requested_by, space_id: job.space_id, team_ids: [] };
 }

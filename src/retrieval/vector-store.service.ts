@@ -1,3 +1,6 @@
+/**
+ * @file 向量索引存储。封装 Qdrant 集合、版本切换、权限过滤与混合搜索，支持内存路径。
+ */
 import { Injectable, OnModuleInit } from "@nestjs/common";
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { v5 as uuidV5 } from "uuid";
@@ -22,6 +25,12 @@ export class VectorStoreService implements OnModuleInit {
     { vector: number[]; sparse?: SparseEmbedding; payload: Record<string, any> }
   >();
 
+  /**
+   * 使早于指定版本的文档分块不再参与召回。
+   *
+   * @param docId 知识文档标识。
+   * @param version 本次操作对应的内容版本。
+   */
   async deactivateVersionsBefore(docId: string, version: number): Promise<void> {
     if (this.config.vectorStore === 'qdrant') {
       await this.qdrant.setPayload(this.config.qdrantCollection, { wait: true, payload: { is_active: false },
@@ -32,6 +41,12 @@ export class VectorStoreService implements OnModuleInit {
   }
   private readonly qdrant: QdrantClient;
 
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param sparse SparseEmbeddingService 依赖实例。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly sparse: SparseEmbeddingService,
@@ -43,10 +58,16 @@ export class VectorStoreService implements OnModuleInit {
     });
   }
 
+  /**
+   * 在 NestJS 模块启动时初始化所需资源。
+   */
   async onModuleInit(): Promise<void> {
     if (this.config.vectorStore === "qdrant") await this.ensureCollection();
   }
 
+  /**
+   * 检查或创建向量集合及检索使用的必要索引。
+   */
   async ensureCollection(): Promise<void> {
     const collections = await this.qdrant.getCollections();
     const exists = collections.collections.some(
@@ -98,13 +119,14 @@ export class VectorStoreService implements OnModuleInit {
     }
   }
 /**
- * 
- * @param document 文档索引请求，包含 doc_id、document_version、title、visibility 等元数据
- * @param chunks  Chunk 数组，由 chunkMarkdown 生成
- * @param vectors Dense 向量数组，由 BGE 模型生成
- * @param sparseVectors Sparse 向量数组，由 BM25 算法生成
- * @param activate 是否立即激活这些 points
- */
+   * 批量写入文档分块的向量及权限版本信息，更新现有索引点。
+   *
+   * @param document 文档索引请求，包含 doc_id、document_version、title、visibility 等元数据
+   * @param chunks  Chunk 数组，由 chunkMarkdown 生成
+   * @param vectors Dense 向量数组，由 BGE 模型生成
+   * @param sparseVectors Sparse 向量数组，由 BM25 算法生成
+   * @param activate 是否立即激活这些 points
+   */
   async upsertChunks(
     document: DocumentIndexRequest,
     chunks: Chunk[],
@@ -153,6 +175,8 @@ export class VectorStoreService implements OnModuleInit {
    * @returns pointId 点 ID（chunk ID）
    * @returns score 相似度分数（0-1之间）
    * @returns payload 元数据（包含 doc_id、visibility、team_id、space_id、chunk content 等）
+   *
+   * @param wikiOnly wikiOnly 参数。
    */
   async search(
     queryVector: number[], // 查询的稠密向量（768维或1536维）
@@ -201,6 +225,8 @@ export class VectorStoreService implements OnModuleInit {
    * @returns pointId 点 ID（chunk ID）
    * @returns score 相似度分数（0-1之间）
    * @returns payload 元数据（包含 doc_id、visibility、team_id、space_id、chunk content 等）
+   *
+   * @param wikiOnly wikiOnly 参数。
    */
   async keywordSearch(
     query: string,
@@ -231,6 +257,11 @@ export class VectorStoreService implements OnModuleInit {
     return bm25Search(query, documents, limit, this.sparse);
   }
 
+  /**
+   * 停用文档的当前向量索引，阻止其继续被召回。
+   *
+   * @param docId 知识文档标识。
+   */
   async deactivateDocument(docId: string): Promise<void> {
     if (this.config.vectorStore === "qdrant") {
       await this.qdrant.setPayload(this.config.qdrantCollection, {
@@ -244,6 +275,12 @@ export class VectorStoreService implements OnModuleInit {
       if (item.payload.doc_id === docId) item.payload.is_active = false;
   }
 
+  /**
+   * 激活指定文档版本的分块，并处理旧版本状态。
+   *
+   * @param docId 知识文档标识。
+   * @param version 本次操作对应的内容版本。
+   */
   async activateDocumentVersion(docId: string, version: number): Promise<void> {
     if (this.config.vectorStore === "qdrant") {
       await this.qdrant.setPayload(this.config.qdrantCollection, {
@@ -272,6 +309,12 @@ export class VectorStoreService implements OnModuleInit {
     }
   }
 
+  /**
+   * 删除指定文档版本的向量记录。
+   *
+   * @param docId 知识文档标识。
+   * @param version 本次操作对应的内容版本。
+   */
   async deleteDocumentVersion(docId: string, version: number): Promise<void> {
     if (this.config.vectorStore === "qdrant") {
       await this.qdrant.delete(this.config.qdrantCollection, {
@@ -294,6 +337,11 @@ export class VectorStoreService implements OnModuleInit {
     }
   }
 
+  /**
+   * 删除指定文档对应的数据及关联记录。
+   *
+   * @param docId 知识文档标识。
+   */
   async deleteDocument(docId: string): Promise<void> {
     if (this.config.vectorStore === "qdrant") {
       await this.qdrant.delete(this.config.qdrantCollection, {
@@ -307,6 +355,13 @@ export class VectorStoreService implements OnModuleInit {
   }
 }
 
+/**
+ * 将分块、文档权限与版本信息编码为向量库载荷。
+ *
+ * @param document 当前知识文档记录。
+ * @param chunk 当前索引分块。
+ * @returns Record<string, any> 类型的处理结果。
+ */
 export function buildPayload(
   document: DocumentIndexRequest,
   chunk: Chunk,
@@ -337,6 +392,14 @@ export function buildPayload(
   };
 }
 
+/**
+ * 根据访问上下文和知识范围构建向量查询过滤条件。
+ *
+ * @param context 当前用户、空间与团队身份，用于权限校验。
+ * @param scope 本次检索或操作允许覆盖的范围。
+ * @param wikiOnly wikiOnly 参数。
+ * @returns Record<string, any> 类型的处理结果。
+ */
 export function buildPermissionFilter(
   context: AccessContext, // 包含 user_id, space_id, team_ids 等用户上下文
   scope: KnowledgeScope,// 包含 private/team/public 开关和 document_ids 列表
@@ -378,6 +441,15 @@ export function buildPermissionFilter(
   return { must, should, ...(!wikiOnly ? { must_not: [{ key: "knowledge_layer", match: { value: "wiki" } }] } : {}) };
 }
 
+/**
+ * 在内存检索路径中应用文档权限规则。
+ *
+ * @param payload 需要传递或持久化的业务数据。
+ * @param context 当前用户、空间与团队身份，用于权限校验。
+ * @param scope 本次检索或操作允许覆盖的范围。
+ * @param wikiOnly wikiOnly 参数。
+ * @returns 条件是否满足的判断结果。
+ */
 export function canAccess(
   payload: Record<string, any>,
   context: AccessContext,
@@ -408,6 +480,17 @@ export function canAccess(
   return payload.visibility === "public" && scope.public;
 }
 
+/**
+ * 按词频和文档长度计算 BM25 相关性排名。
+ *
+ * @param query 用户问题或检索查询。
+ * @param documents 需要筛选或处理的文档集合。
+ * @param limit 本次读取或处理的数量上限。
+ * @param sparse SparseEmbeddingService 依赖实例。
+ * @param k1 BM25 中控制词频饱和程度的系数。
+ * @param b 当前比较输入或 BM25 长度归一化系数。
+ * @returns 检索候选命中列表。
+ */
 export function bm25Search(
   query: string,
   documents: ReadonlyArray<readonly [string, Record<string, any>]>,
@@ -455,6 +538,12 @@ export function bm25Search(
     .slice(0, limit);
 }
 
+/**
+ * 组合标题、章节和正文，形成关键词检索文本。
+ *
+ * @param payload 需要传递或持久化的业务数据。
+ * @returns 整理后的文本或标识。
+ */
 function searchableText(payload: Record<string, any>): string {
   return [
     payload.title ?? "",

@@ -1,3 +1,6 @@
+/**
+ * @file Agent 图工作流。用 LangGraph 连接规划、确认、Worker 执行、汇总、核验和恢复节点。
+ */
 import { Injectable, BadRequestException } from "@nestjs/common";
 import {
   Annotation,
@@ -86,6 +89,12 @@ const GraphState = Annotation.Root({
 });
 type State = typeof GraphState.State;
 
+/**
+ * 只保留候选采用的证据；编辑候选同时保留当前文档来源。
+ *
+ * @param output 指定子任务已交付的结果和证据。
+ * @returns Agent 引用来源列表。
+ */
 function candidateEvidence(output: WorkerOutput) {
   const adopted = selectAgentCitations(output.result, new Map(output.citations.map((citation) => [citation.id, citation])));
   const ids = new Set(adopted.map((citation) => citation.id));
@@ -95,12 +104,25 @@ function candidateEvidence(output: WorkerOutput) {
     evidence: output.evidence.filter(([id]) => ids.has(id)) };
 }
 
+/**
+ * 从任务上下文提取会话约束、个人偏好、模板与技能要求。
+ *
+ * @param context 当前操作的上下文。
+ * @returns 整理后的状态与操作结果对象。
+ */
 function writingConstraints(context: Record<string, any>) {
   return { conversation_constraints: context.conversation_constraints, user_preferences: context.user_preferences,
     template_instructions: context.template?.instructions, skill_acceptance: context.skill_snapshot?.skill.acceptance };
 }
 
-/** Checkpoints written before constraint state existed still have the original continuation. */
+/**
+ * 为旧版检查点补出约束处理后的继续节点。
+ *
+ *  Checkpoints written before constraint state existed still have the original continuation.
+ *
+ * @param state 待校验或执行的任务计划。
+ * @returns 整理后的文本或标识。
+ */
 export function constraintContinuation(state: {
   constraintNext?: string;
   questions?: Record<string, unknown>;
@@ -114,6 +136,12 @@ export function constraintContinuation(state: {
   return state.plan ? 'decide_next' : 'compose';
 }
 
+/**
+ * 判断本次请求是否要求先展示计划并等待用户确认。
+ *
+ * @param request 包含写作需求、编辑器快照和参考资料的 Agent 请求。
+ * @returns 条件是否满足的判断结果。
+ */
 export function needsPlanApproval(request: DocumentAgentDto) {
   return (
     request.mode === "plan" ||
@@ -129,6 +157,18 @@ export function needsPlanApproval(request: DocumentAgentDto) {
 export class AgentGraphWorkflow {
   private readonly verification = new EvidenceVerificationService();
   private readonly research = new ResearchWritingService();
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param repository AgentRunRepository 依赖实例。
+   * @param document 当前知识文档记录。
+   * @param runtime AgentRuntimeService 依赖实例。
+   * @param supervisor AgentSupervisorService 依赖实例。
+   * @param settings AgentSettingsService 依赖实例。
+   * @param wiki WikiService 依赖实例。
+   * @param config 应用运行配置。
+   * @param auth AuthService 依赖实例。
+   */
   constructor(
     private readonly repository: AgentRunRepository,
     private readonly document: DocumentAgentService,
@@ -140,6 +180,14 @@ export class AgentGraphWorkflow {
     private readonly auth: AuthService,
   ) {}
 
+  /**
+   * 构建并编译当前运行对应的 LangGraph 节点、路由和检查点存储。
+   *
+   * @param run 当前 Agent 运行记录。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param signal 取消信号，用于中止请求和后台处理。
+   * @returns 供后续操作使用的回调或清理函数；未找到或不可用时可能为空。
+   */
   async build(run: GraphRun, context: AccessContext, signal: AbortSignal) {
     const repo = this.repository,
       generation = run.execution_generation,
@@ -151,12 +199,25 @@ export class AgentGraphWorkflow {
     const personal = await this.settings.runtime(context);
     const budget = run.budget;
     let events: Promise<void> = Promise.resolve();
+    /**
+     * 按顺序持久化节点事件，供前端通过游标读取。
+     *
+     * @param event 需要处理的事件。
+     * @param data 当前事件或操作携带的数据。
+     */
     const emit = (event: string, data: Record<string, any>) => {
       if (event === "done") return;
       events = events.then(() => repo.event(id, generation, event, data));
       // The node barrier below propagates this error before any following checkpoint.
       void events.catch(() => undefined);
     };
+    /**
+     * 从持久化任务恢复 Worker 的身份、配置、预算和事件出口。
+     *
+     * @param state 当前业务或插件状态。
+     * @param primary 负责最终整合与交付的主 Agent 状态。
+     * @returns Worker 执行环境。
+     */
     const environment = (state: State, primary = false): WorkerEnvironment => ({
       run_id: id,
       request: {
@@ -203,6 +264,12 @@ export class AgentGraphWorkflow {
         },
       },
     });
+    /**
+     * 从产物存储读取指定步骤的 Worker 输出。
+     *
+     * @param key 查询或存储使用的键。
+     * @returns 子任务结果、用量与证据。
+     */
     const output = async (key: string) => {
       const value = await repo.artifact<WorkerOutput>(id, key);
       await this.document.validateGraphSources(
@@ -212,6 +279,12 @@ export class AgentGraphWorkflow {
       );
       return value;
     };
+    /**
+     * 收集当前计划中已完成且版本有效的步骤结果。
+     *
+     * @param state 当前业务或插件状态。
+     * @returns 子任务结果、用量与证据。
+     */
     const completed = async (
       state: State,
     ): Promise<Record<string, WorkerOutput>> =>
@@ -224,7 +297,20 @@ export class AgentGraphWorkflow {
           ]),
         ),
       );
+    /**
+     * 读取图任务保存的基础上下文。
+     *
+     * @param state 当前业务或插件状态。
+     * @returns any 类型的处理结果。
+     */
     const base = (state: State) => repo.artifact<any>(id, state.base);
+    /**
+     * 为图节点统一附加执行追踪和错误收尾。
+     *
+     * @param name 目标名称。
+     * @param work 需要在受控上下文中执行的异步操作。
+     * @returns 供后续操作使用的回调或清理函数。
+     */
     const wrap =
       (name: string, work: (state: any) => Promise<any>) =>
       async (state: any) => {
@@ -255,6 +341,15 @@ export class AgentGraphWorkflow {
           await repo.recordTraces(id, generation, run.payload.traces);
         }
       };
+    /**
+     * 运行计划中指定角色的步骤，并保存该步骤的产物。
+     *
+     * @param state 当前业务或插件状态。
+     * @param step 待校验或执行的任务计划（可选）。
+     * @param executionLimit 当前步骤允许使用的执行额度（可选）。
+     * @param stepTurnLimit 当前步骤允许进行的模型轮次数（可选）。
+     * @returns 子任务结果、用量与证据。
+     */
     const worker = async (
       state: State,
       step?: ExecutionPlan["steps"][number],

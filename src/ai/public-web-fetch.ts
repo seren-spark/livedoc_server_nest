@@ -1,8 +1,17 @@
+/**
+ * @file 公共网页读取。校验 URL 和解析地址，读取网页并转换成 Agent 可用的文本。
+ */
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import http from "node:http";
 import https from "node:https";
 
+/**
+ * 判断解析出的 IP 是否为允许访问的公共地址。
+ *
+ * @param address 待校验的网络地址。
+ * @returns 条件是否满足的判断结果。
+ */
 export function isPublicAddress(address: string): boolean {
   if (isIP(address) === 4) {
     const p = address.split(".").map(Number);
@@ -43,6 +52,12 @@ export function isPublicAddress(address: string): boolean {
     !(words[0] === 0x2001 && (words[1]! <= 0x01ff || words[1] === 0xdb8))
   );
 }
+/**
+ * 校验网页 URL 与解析地址，拒绝私网和本机访问目标。
+ *
+ * @param value 待校验或转换的值。
+ * @returns 整理后的状态与操作结果对象。
+ */
 export async function validatePublicUrl(value: string) {
   const url = new URL(value);
   if (
@@ -59,6 +74,12 @@ export async function validatePublicUrl(value: string) {
     throw new Error("拒绝私网、回环或保留地址");
   return { url, address: addresses[0]!, addresses };
 }
+/**
+ * 清理网页 HTML 并转换为供模型读取的 Markdown 文本。
+ *
+ * @param html 待转换的 HTML 内容。
+ * @returns 整理后的文本或标识。
+ */
 export function htmlToMarkdown(html: string): string {
   return html
     .replace(/<(script|style|noscript|svg)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
@@ -81,6 +102,13 @@ export function htmlToMarkdown(html: string): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
+/**
+ * 在地址、超时和响应大小限制内读取公共网页。
+ *
+ * @param input 本次操作的输入数据。
+ * @param signal 取消信号，用于中止请求和后台处理（可选）。
+ * @returns 整理后的状态与操作结果对象。
+ */
 export async function fetchPublicPage(
   input: string,
   signal?: AbortSignal,

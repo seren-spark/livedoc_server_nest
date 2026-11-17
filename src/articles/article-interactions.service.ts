@@ -1,3 +1,6 @@
+/**
+ * @file 文章互动。校验文章可见性与用户身份，处理点赞、收藏、评论和回复。
+ */
 import {
   ConflictException,
   ForbiddenException,
@@ -20,6 +23,15 @@ import {
 
 @Injectable()
 export class ArticleInteractionsService {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param repository ArticleInteractionsRepository 依赖实例。
+   * @param drafts ArticleRepository 依赖实例。
+   * @param documents 需要筛选或处理的文档集合。
+   * @param articles ArticlesService 依赖实例。
+   * @param auth AuthService 依赖实例。
+   */
   constructor(
     private readonly repository: ArticleInteractionsRepository,
     private readonly drafts: ArticleRepository,
@@ -28,6 +40,13 @@ export class ArticleInteractionsService {
     private readonly auth: AuthService,
   ) {}
 
+  /**
+   * 查询当前用户拥有的记录或互动状态。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async mine(id: string, context: AccessContext) {
     await this.documents.getPublicArticle(id);
     return {
@@ -35,6 +54,15 @@ export class ArticleInteractionsService {
       ...(await this.repository.mine(id, context.user_id)),
     };
   }
+  /**
+   * 新增或取消当前用户的点赞、收藏状态。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param kind 当前结果或来源的分类。
+   * @param active 是否启用或激活当前记录。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async react(
     id: string,
     context: AccessContext,
@@ -46,6 +74,14 @@ export class ArticleInteractionsService {
     );
     return this.mine(id, context);
   }
+  /**
+   * 分页读取文章下的顶层评论。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param page 当前页码或页面记录。
+   * @param size 本次批量处理或页面读取的数量。
+   * @returns 当前页条目与符合条件的总数；未找到或不可用时可能为空。
+   */
   async comments(id: string, page: number, size: number) {
     await this.documents.getPublicArticle(id);
     const result = await this.repository.listComments(id, page, size);
@@ -57,6 +93,15 @@ export class ArticleInteractionsService {
       page_size: size,
     };
   }
+  /**
+   * 分页读取指定评论下的回复。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param commentId 评论或回复标识。
+   * @param page 当前页码或页面记录。
+   * @param size 本次批量处理或页面读取的数量。
+   * @returns 当前页条目与符合条件的总数；未找到或不可用时可能为空。
+   */
   async replies(id: string, commentId: string, page: number, size: number) {
     await this.documents.getPublicArticle(id);
     const parent = await this.repository.comment(commentId);
@@ -75,6 +120,16 @@ export class ArticleInteractionsService {
       page_size: size,
     };
   }
+  /**
+   * 校验评论目标后保存评论或回复。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param content 待处理的正文内容。
+   * @param requestedId requested 对应的唯一标识（可选）。
+   * @param parentId parent 对应的唯一标识。
+   * @returns 时间对象；未找到或不可用时可能为空。
+   */
   async addComment(
     id: string,
     context: AccessContext,
@@ -123,6 +178,14 @@ export class ArticleInteractionsService {
     });
     return this.withAuthor(result!);
   }
+  /**
+   * 校验评论归属后移除评论及相应关联数据。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param commentId 评论或回复标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async removeComment(id: string, commentId: string, context: AccessContext) {
     await this.write(id, async (manager) => {
       const comment = await this.repository.comment(commentId, manager);
@@ -134,6 +197,14 @@ export class ArticleInteractionsService {
     });
     return { status: "deleted", comment_id: commentId };
   }
+  /**
+   * 分页读取当前用户收藏的文章。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param page 当前页码或页面记录。
+   * @param size 本次批量处理或页面读取的数量。
+   * @returns 当前页条目与符合条件的总数。
+   */
   async favorites(context: AccessContext, page: number, size: number) {
     let result;
     if (this.repository.database.metadataEnabled)
@@ -170,6 +241,12 @@ export class ArticleInteractionsService {
       page_size: size,
     };
   }
+  /**
+   * 为评论记录补充可展示的作者信息。
+   *
+   * @param comment 用户提交的评论或反馈说明。
+   * @returns 时间对象；未找到或不可用时可能为空。
+   */
   private async withAuthor(comment: ArticleComment) {
     return {
       ...comment,
@@ -180,6 +257,13 @@ export class ArticleInteractionsService {
       author_name: await this.auth.publicName(comment.user_id),
     };
   }
+  /**
+   * 锁定文章发布状态后执行互动写入，避免对已撤回内容继续操作。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param work 当前数据库事务执行器。
+   * @returns T 类型的处理结果。
+   */
   private async write<T>(
     id: string,
     work: (manager?: EntityManager) => Promise<T>,

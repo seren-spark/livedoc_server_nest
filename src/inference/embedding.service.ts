@@ -1,3 +1,6 @@
+/**
+ * @file 文本向量化。为查询和文档生成稠密向量，复用缓存并检查模型 Token 预算。
+ */
 import { Injectable } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import { AppConfig } from "../config/app-config.js";
@@ -10,29 +13,42 @@ export class EmbeddingService {
   // ponytail: process-local 1024-entry reuse. Persistent reuse can follow measured cold-start costs.
   private readonly vectors = new Map<string, Promise<number[]>>();
   //依赖配置和推理 Worker。
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param worker InferenceWorkerService 依赖实例。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly worker: InferenceWorkerService,
   ) {}
   //向量维度，从配置读。
+  /**
+   * 向量维度，从配置读。
+   *
+   * @returns 计算得到的数值。
+   */
   get dim(): number {
     return this.config.embeddingDim;
   }
 
   /**
    * 单文本 embedding 复用 batch 接口，取第一个结果
-   * @param text 
+   * @param text 待处理的文本。
    * 768 维稠密向量（BGE 模型输出）
-   * number[]: [0.0234, -0.0567, 0.1234, ..., 0.0891]    
+   * number[]: [0.0234, -0.0567, 0.1234, ..., 0.0891]
+   *
+   * @returns 计算得到的数值向量或评分列表。
    */
   async embed(text: string): Promise<number[]> {
     return (await this.embedBatch([text]))[0] ?? [];
   }
 /**
- * 批量 embedding
- * @param texts 
- * @returns 
- */
+   * 批量 embedding
+   * @param texts 需要批量生成向量的文本列表。
+   * @returns 与输入文本顺序一致的稠密向量数组。
+   */
   async embedBatch(texts: string[]): Promise<number[][]> {
     //默认 embeddingProvider = 'hash' 。也就是说， 如果不配置环境变量，Dense 向量不是真模型生成的，而是 hashEmbedding 生成的伪向量 。这是本地开发无 GPU 时的回退方案。
     if (this.config.embeddingProvider === "transformers")
@@ -43,6 +59,12 @@ export class EmbeddingService {
     return texts.map((text) => hashEmbedding(text, this.config.embeddingDim));
   }
 
+  /**
+   * 优先复用已计算的文本向量，仅对未命中部分发起推理。
+   *
+   * @param texts 需要批量处理的文本列表。
+   * @returns 各输入文本对应的向量数组。
+   */
   private async embedCached(texts: string[]): Promise<number[][]> {
     const keys = texts.map((text) => createHash('sha256').update(JSON.stringify([
       this.config.embeddingProvider, this.config.embeddingModel, this.config.embeddingDim,
@@ -77,6 +99,12 @@ export class EmbeddingService {
     return Promise.all(keys.map(async (key) => [...await requested.get(key)!]));
   }
 
+  /**
+   * 计算输入文本的 Token 数，用于预算检查。
+   *
+   * @param texts 需要批量处理的文本列表。
+   * @returns 计算得到的数值向量或评分列表。
+   */
   async countTokens(texts: string[]): Promise<number[]> {
     if (this.config.embeddingProvider === "transformers") {
       return this.worker.countEmbeddingTokens(texts);
@@ -91,6 +119,13 @@ export class EmbeddingService {
 }
 
 //基于 hash 生成稠密向量
+/**
+ * 基于 hash 生成稠密向量
+ *
+ * @param text 待处理的文本。
+ * @param dimension 生成向量使用的维度。
+ * @returns 计算得到的数值向量或评分列表。
+ */
 export function hashEmbedding(text: string, dimension: number): number[] {
   //初始化全 0 向量，维度默认 384。
   const vector = new Array<number>(dimension).fill(0);

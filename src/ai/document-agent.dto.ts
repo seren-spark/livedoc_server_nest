@@ -1,3 +1,6 @@
+/**
+ * @file Agent 请求校验。声明请求字段及校验规则，约束编辑器快照、引用资料和执行模式。
+ */
 import {
   Allow,
   ArrayMaxSize,

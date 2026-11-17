@@ -1,3 +1,6 @@
+/**
+ * @file 会话约束存储。持久化会话写作约束与已处理输入，防止重复应用同一轮修改。
+ */
 import { DatabaseService } from '../database/database.service.js';
 import { AgentExecutionError } from './agent-execution.js';
 
@@ -19,6 +22,12 @@ export interface ConstraintScope {
   conversation_id: string;
   document_key: string;
 }
+/**
+ * 解析持久化的 JSON 数据，恢复业务结构。
+ *
+ * @param value 待校验或转换的值。
+ * @returns T 类型的处理结果。
+ */
 const decode = <T>(value: unknown): T =>
   (typeof value === 'string' ? JSON.parse(value) : value) as T;
 
@@ -26,8 +35,19 @@ export class ConversationConstraintsRepository {
   private readonly states = new Map<string, ConstraintSnapshot & { expires: number; document: string }>();
   private readonly inputs = new Map<string, { hash: string; snapshot: ConstraintSnapshot; expires: number }>();
 
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param database 共享数据库服务。
+   */
   constructor(private readonly database: DatabaseService) {}
 
+  /**
+   * 读取当前作用范围内的会话约束。
+   *
+   * @param scope 本次检索或操作允许覆盖的范围。
+   * @returns ConstraintSnapshot 类型的处理结果。
+   */
   async read(scope: ConstraintScope): Promise<ConstraintSnapshot> {
     if (!this.database.memoryEnabled) {
       const state = this.states.get(scope.key);
@@ -42,6 +62,14 @@ export class ConversationConstraintsRepository {
     return state ? { revision: state.revision, items: decode(state.items) } : { revision: 0, items: [] };
   }
 
+  /**
+   * 查询输入是否已处理，并校验其内容摘要。
+   *
+   * @param scope 本次检索或操作允许覆盖的范围。
+   * @param inputKey inputKey 参数（string）。
+   * @param hash 待核对的内容摘要。
+   * @returns ConstraintSnapshot 类型的处理结果；未找到或不可用时可能为空。
+   */
   async processed(scope: ConstraintScope, inputKey: string, hash: string): Promise<ConstraintSnapshot | undefined> {
     let receipt: { hash: string; snapshot: ConstraintSnapshot } | undefined;
     if (this.database.memoryEnabled) {
@@ -59,6 +87,17 @@ export class ConversationConstraintsRepository {
     return receipt?.snapshot;
   }
 
+  /**
+   * 校验当前版本后提交新状态与输入处理记录。
+   *
+   * @param scope 本次检索或操作允许覆盖的范围。
+   * @param inputKey inputKey 参数（string）。
+   * @param hash 待核对的内容摘要。
+   * @param previous 更新前的状态。
+   * @param next 准备写入的下一状态。
+   * @param expiresAt 会话或记录的失效时间。
+   * @returns ConstraintSnapshot 类型的处理结果。
+   */
   async commit(scope: ConstraintScope, inputKey: string, hash: string,
     previous: ConstraintSnapshot, next: ConstraintSnapshot, expiresAt: Date): Promise<ConstraintSnapshot> {
     if (!this.database.memoryEnabled) {
@@ -106,6 +145,11 @@ export class ConversationConstraintsRepository {
     });
   }
 
+  /**
+   * 删除指定文档对应的数据及关联记录。
+   *
+   * @param documentKey documentKey 参数（string）。
+   */
   async deleteDocument(documentKey: string): Promise<void> {
     if (!this.database.memoryEnabled) {
       for (const [key, state] of this.states) {
@@ -123,6 +167,9 @@ export class ConversationConstraintsRepository {
     });
   }
 
+  /**
+   * 构造版本冲突错误，让调用方重新加载最新状态。
+   */
   private conflict(): never {
     throw new AgentExecutionError('MEMORY_VERSION_CONFLICT', '会话约束已被另一输入更新，请重试当前任务', true);
   }

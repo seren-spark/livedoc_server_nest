@@ -1,3 +1,6 @@
+/**
+ * @file 代码块安全切分。识别代码结构和可切边界，避免拆断不可分割的代码单元。
+ */
 import ts from "typescript";
 
 export interface CodeRange {
@@ -8,7 +11,16 @@ export interface CodeRange {
 
 export class OversizedCodeError extends Error {}
 
-/** JS/TS use their parser; other languages and incomplete examples use full lines. */
+/**
+ * JS/TS 使用语法树确定切分边界，其他语言或不完整代码按完整行切分。
+ *
+ *  JS/TS use their parser; other languages and incomplete examples use full lines.
+ *
+ * @param code 错误标识或待解析的代码内容。
+ * @param language 代码块使用的语言标识。
+ * @param fits 判断内容是否满足当前预算的回调。
+ * @returns 整理后的结果列表。
+ */
 export function codeRanges(
   code: string,
   language: string,
@@ -28,6 +40,11 @@ export function codeRanges(
     const diagnostics = (source as ts.SourceFile & { parseDiagnostics: ts.Diagnostic[] }).parseDiagnostics;
     if (!diagnostics.length) {
       for (const statement of source.statements) primary.add(statement.end);
+      /**
+       * 遍历代码语法树，记录函数归属和可安全切分的语句边界。
+       *
+       * @param node 当前语法树或编辑器节点。
+       */
       const visit = (node: ts.Node) => {
         if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
           for (const member of node.members) secondary.add(member.end);
@@ -67,6 +84,12 @@ export function codeRanges(
     const contentStart = cursor + (code.slice(cursor).match(/^\s*/u)?.[0].length ?? 0);
     const owner = owners.filter((entry) => entry.start <= contentStart && entry.end > contentStart)
       .sort((a, b) => (a.end - a.start) - (b.end - b.start))[0];
+    /**
+     * 查找指定代码位置所属的语法结构。
+     *
+     * @param end 区间结束位置。
+     * @returns 整理后的文本或标识；未找到或不可用时可能为空。
+     */
     const ownerAt = (end: number) => owner && end <= owner.end ? owner.name : undefined;
     let end: number | undefined;
     for (const boundaries of boundaryGroups) {

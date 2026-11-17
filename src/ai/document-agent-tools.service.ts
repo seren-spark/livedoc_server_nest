@@ -1,3 +1,6 @@
+/**
+ * @file 文档 Agent 工具。声明并执行正文读取、资料检索与结果提交工具，按角色限制可用能力。
+ */
 import {
   ConflictException,
   ForbiddenException,
@@ -69,6 +72,15 @@ const planSchema = {
   required: ["goal", "outline", "constraints", "steps"],
   additionalProperties: false,
 };
+/**
+ * 构造具有严格参数结构的模型工具定义。
+ *
+ * @param name 目标名称。
+ * @param description 向用户或模型说明当前能力的文字。
+ * @param properties 工具或节点的属性定义。
+ * @param required 当前操作必须提供的字段集合。
+ * @returns FunctionTool 类型的处理结果。
+ */
 function tool(
   name: string,
   description: string,
@@ -221,6 +233,19 @@ export const DOCUMENT_AGENT_TOOLS: FunctionTool[] = [
 @Injectable()
 export class DocumentAgentToolsService {
   private readonly tokenizer;
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param documents 需要筛选或处理的文档集合。
+   * @param imports DocumentImportsService 依赖实例。
+   * @param retrieval 共享知识检索服务。
+   * @param workspace WorkspaceService 依赖实例。
+   * @param llm 共享模型调用服务。
+   * @param mcp AgentMcpService 依赖实例。
+   * @param settings AgentSettingsService 依赖实例。
+   * @param wiki WikiService 依赖实例（可选）。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly documents: DocumentsService,
@@ -236,6 +261,13 @@ export class DocumentAgentToolsService {
       config.tokenizerEncoding as Parameters<typeof getEncoding>[0],
     );
   }
+  /**
+   * 判断指定 Agent 角色是否允许使用该工具。
+   *
+   * @param role 本次模型或 Worker 执行角色。
+   * @param name 目标名称。
+   * @returns 条件是否满足的判断结果。
+   */
   roleAllows(role: WorkerRole, name: string): boolean {
     if (role === "primary") return true;
     if (
@@ -260,6 +292,13 @@ export class DocumentAgentToolsService {
       ].includes(name) || this.mcp.tools.get(name)?.research === true
     );
   }
+  /**
+   * 按角色、模式和当前能力配置筛选可向模型暴露的工具。
+   *
+   * @param input 当前子任务的角色、目标、依赖与执行环境。
+   * @param all 本次处理涉及的完整条目集合。
+   * @returns 整理后的结果列表。
+   */
   allowedTools(input: WorkerInput, all = false): FunctionTool[] {
     const { request, personal } = input.environment;
     const { step } = input;
@@ -398,6 +437,16 @@ export class DocumentAgentToolsService {
       });
   }
 
+  /**
+   * 检查工具权限，再执行正文读取、资料检索或候选提交，并维护证据状态。
+   *
+   * @param input 当前子任务的角色、目标、依赖与执行环境。
+   * @param state 当前业务或插件状态。
+   * @param name 目标名称。
+   * @param args 当前工具调用的参数。
+   * @param callId call 对应的唯一标识。
+   * @returns 当前页条目与符合条件的总数；未找到或不可用时可能为空。
+   */
   async execute(
     input: WorkerInput,
     state: WorkerState,
@@ -418,6 +467,12 @@ export class DocumentAgentToolsService {
       return { question_id: args.question_id, notes: notes.slice(offset, offset + limit), total: notes.length,
         next_offset: offset + limit < notes.length ? offset + limit : null };
     }
+    /**
+     * 把工具执行结果记入当前任务状态与证据集合。
+     *
+     * @param id 目标记录的唯一标识。
+     * @param content 待处理的正文内容。
+     */
     const observe = (id: string, content: string) => {
       signal.throwIfAborted();
       if (
@@ -434,6 +489,12 @@ export class DocumentAgentToolsService {
         );
       }
     };
+    /**
+     * 登记引用元数据和对应证据内容，供候选校验与展示使用。
+     *
+     * @param c 当前用户、空间与团队的访问身份。
+     * @returns 整理后的文本或标识。
+     */
     const addCitation = (c: AgentCitation) => {
       signal.throwIfAborted();
       if (!citations.has(c.id)) citations.set(c.id, c);
@@ -459,6 +520,16 @@ export class DocumentAgentToolsService {
       if (low && /[\uD800-\uDBFF]/.test(content[offset + low - 1]!)) low--;
       return content.slice(offset, offset + low);
     };
+    /**
+     * 生成指定来源的可读取内容页及来源定位信息。
+     *
+     * @param prefix 需要匹配或补入的前缀。
+     * @param content 待处理的正文内容。
+     * @param metadata 来源、权限或版本等附加元数据。
+     * @param offset 从原文或分页数据的哪个位置开始读取。
+     * @param limit 本次读取或处理的数量上限。
+     * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+     */
     const sourcePage = (
       prefix: string,
       content: string,
@@ -490,6 +561,14 @@ export class DocumentAgentToolsService {
           offset + page.length < content.length ? offset + page.length : null,
       };
     };
+    /**
+     * 检查引用资料的权限与版本后，返回所请求的资料内容。
+     *
+     * @param id 目标记录的唯一标识。
+     * @param offset 从原文或分页数据的哪个位置开始读取。
+     * @param limit 本次读取或处理的数量上限。
+     * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+     */
     const readReference = async (id: string, offset = 0, limit = 5000) => {
       const ref = request.references.find((r) => r.id === id);
       if (!ref) throw new Error("仅可读取本轮选择的参考资料");
@@ -527,6 +606,11 @@ export class DocumentAgentToolsService {
         limit,
       );
     };
+    /**
+     * 检查工具权限，再执行正文读取、资料检索或候选提交，并维护证据状态。
+     *
+     * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+     */
     const execute = async () => {
       if (name === "read_current_document") {
         if (args.selection) {
@@ -924,6 +1008,16 @@ export class DocumentAgentToolsService {
     signal.throwIfAborted();
     return value;
   }
+  /**
+   * 在指定知识范围内检索证据，并登记实际使用的来源。
+   *
+   * @param input 当前子任务的角色、目标、依赖与执行环境。
+   * @param state 当前业务或插件状态。
+   * @param args 当前工具调用的参数。
+   * @param addCitation 登记本次采用引用的回调。
+   * @param observe 登记工具观察结果的回调。
+   * @returns 整理后的结果列表；未找到或不可用时可能为空。
+   */
   async searchEvidence(
     input: WorkerInput,
     state: WorkerState,
@@ -949,6 +1043,13 @@ export class DocumentAgentToolsService {
         /原文|原始资料|原始文档|\boriginal\b|\braw\b/i.test(request.query));
     let partialPages: WikiEvidence[] = [];
     let partialCoverage: WikiCoverageResult | undefined;
+    /**
+     * 将知识页面结果转换为工具输出需要的行结构。
+     *
+     * @param pages 本次涉及的分页数据。
+     * @param coverage 任务要求与证据的覆盖情况。
+     * @returns 整理后的结果列表；未找到或不可用时可能为空。
+     */
     const wikiRows = (pages: WikiEvidence[], coverage: WikiCoverageResult) =>
       pages.flatMap((page) =>
         page.citations.map((citation, index) => ({
@@ -964,9 +1065,20 @@ export class DocumentAgentToolsService {
           note: "Wiki 是整理层，引用对应原始证据。partial 表示仍有缺失；结合补充原文回答，未找到的内容明确说明，不能用常识补齐。",
         })),
       );
+    /**
+     * 检查当前内容是否仍能放入指定预算。
+     *
+     * @param rows 数据库查询结果行集合。
+     * @returns 条件是否满足的判断结果。
+     */
     const fits = (rows: unknown[]) =>
       this.tokenizer.encode(JSON.stringify(rows)).length <=
       Math.min(10000, this.config.llmContextWindow / 2);
+    /**
+     * 校验 Wiki 来源证明后，将该知识页的证据加入当前任务。
+     *
+     * @param pages 本次涉及的分页数据。
+     */
     const adoptWiki = (pages: WikiEvidence[]) => {
       for (const page of pages) {
         if (

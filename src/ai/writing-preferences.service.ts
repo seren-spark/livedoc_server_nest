@@ -1,3 +1,6 @@
+/**
+ * @file 写作偏好。管理用户显式保存的偏好，生成受容量与 Token 预算限制的写作快照。
+ */
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { Ajv } from 'ajv';
@@ -11,6 +14,12 @@ import type {
   PreferenceItem, PreferenceMutation, PreferenceReceipt, PreferenceSnapshot, PreferenceState, PreferenceTurn, PreparedPreferences,
 } from './writing-preferences.types.js';
 
+/**
+ * 计算文本摘要，用作内容指纹或幂等标识。
+ *
+ * @param text 待处理的文本。
+ * @returns 整理后的文本或标识。
+ */
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 const entrySchema = { type: 'object', additionalProperties: false, required: ['text', 'quote'], properties: {
   text: { type: 'string', minLength: 1, maxLength: 1000 }, quote: { type: 'string', minLength: 1, maxLength: 8000 },
@@ -35,23 +44,57 @@ export class WritingPreferencesService {
   private readonly validExtraction = new Ajv({ strict: false }).compile<{ save: ExtractedPreference[]; candidates: ExtractedPreference[] }>(extractionSchema);
   private readonly validMutation = new Ajv({ strict: false }).compile(mutationSchema);
 
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param database 共享数据库服务。
+   */
   constructor(private readonly config: AppConfig, database: DatabaseService) {
     this.repository = new WritingPreferencesRepository(database);
     this.tokenizer = getEncoding(config.tokenizerEncoding as Parameters<typeof getEncoding>[0]);
   }
 
+  /**
+   * 按标识读取写作偏好。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 写作偏好当前状态。
+   */
   get(context: AccessContext): Promise<PreferenceState> {
     return this.repository.read(context);
   }
 
+  /**
+   * 只保留已确认偏好的标识与正文，生成任务使用的只读快照。
+   *
+   * @param state 当前业务或插件状态。
+   * @returns 已确认写作偏好的快照。
+   */
   snapshot(state: PreferenceState): PreferenceSnapshot {
     return { revision: state.revision, items: state.items.filter((item) => item.status === 'confirmed').map(({ id, text }) => ({ id, text })) };
   }
 
+  /**
+   * 使用当前模型的分词器计算文本的 Token 数。
+   *
+   * @param snapshot 任务开始时保存的文档或配置快照。
+   * @returns 计算得到的数值。
+   */
   tokenCount(snapshot: PreferenceSnapshot): number {
     return snapshot.items.length ? this.tokenizer.encode(JSON.stringify(snapshot)).length : 0;
   }
 
+  /**
+   * 对用户输入去重并提取待确认偏好，不把任意输入直接当作长期设定。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param inputId input 对应的唯一标识。
+   * @param text 待处理的文本。
+   * @param turn 执行模型调用的回调或当前问答轮次。
+   * @param signal 取消信号，用于中止请求和后台处理（可选）。
+   * @returns PreparedPreferences 类型的处理结果。
+   */
   async prepare(context: AccessContext, inputId: string, text: string, turn: PreferenceTurn, signal?: AbortSignal): Promise<PreparedPreferences> {
     try {
       if (typeof inputId !== 'string' || !inputId.trim() || inputId.length > 256 || typeof text !== 'string' || text.length > 8000)
@@ -110,6 +153,13 @@ export class WritingPreferencesService {
     }
   }
 
+  /**
+   * 校验操作与修订号后应用偏好的确认、编辑或删除。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param input 本次操作的输入数据。
+   * @returns 写作偏好当前状态。
+   */
   async mutate(context: AccessContext, input: PreferenceMutation): Promise<PreferenceState> {
     if (!this.validMutation(input) || !input.request_id.trim()) throw new BadRequestException('偏好修改请求无效');
     const inputKey = hash(`mutate:${input.request_id}`);
@@ -159,6 +209,13 @@ export class WritingPreferencesService {
       { state: next, saved_ids: [], candidate_ids: [] })).state;
   }
 
+  /**
+   * 判断用户是否明确要求长期保存偏好，排除否定表达和仅本次有效的要求。
+   *
+   * @param text 待处理的文本。
+   * @param quote 支持当前操作的用户原始输入片段（可选）。
+   * @returns 条件是否满足的判断结果。
+   */
   private explicitSave(text: string, quote?: string): boolean {
     const source = quote?.replace(/^[\s。；;！？!?]+|[\s。；;！？!?]+$/gu, '');
     return text.split(/[。；;！？!?\n]/u).some((clause) =>
@@ -167,12 +224,24 @@ export class WritingPreferencesService {
       /(?:记住|记下).{0,32}(?:我|偏好|默认|长期|以后|今后|习惯)|(?:保存|设为|设置为).{0,24}(?:长期|写作偏好|默认)|(?:跨会话|所有会话|新会话).{0,24}(?:保留|默认|使用)/u.test(clause));
   }
 
+  /**
+   * 检查偏好数量及提示词 Token 使用量是否超出上限。
+   *
+   * @param state 当前业务或插件状态。
+   */
   private assertCapacity(state: PreferenceState) {
     const snapshot = this.snapshot(state);
     if (snapshot.items.length > 20 || this.tokenCount(snapshot) > Math.min(500, this.config.shortMemoryTokenBudget))
       throw new AgentExecutionError('PREFERENCE_CONTEXT_EXCEEDED', '长期写作偏好超过容量，请精简或删除部分偏好');
   }
 
+  /**
+   * 整理已提取但尚待应用的偏好结果。
+   *
+   * @param receipt 已经提交操作的回执。
+   * @param replayed 当前结果是否来自已处理输入的回放。
+   * @returns PreparedPreferences 类型的处理结果。
+   */
   private prepared(receipt: PreferenceReceipt, replayed: boolean): PreparedPreferences {
     return { ...receipt, snapshot: this.snapshot(receipt.state), replayed };
   }

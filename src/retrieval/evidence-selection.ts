@@ -1,3 +1,6 @@
+/**
+ * @file 检索证据筛选。去除重复与重叠命中，平衡来源覆盖并限制最终证据数量。
+ */
 import type { SearchHit } from './vector-store.service.js';
 import { tokenizeKeyword } from './text-utils.js';
 
@@ -8,7 +11,16 @@ const QUERY_FILLER = new Set([
   '关于', '一下', '介绍', '原文', '根据', '需要', '是否', '可以', '保证', '还有',
 ]);
 
-/** Fill a missing explicit query facet without displacing an already covered facet. */
+/**
+ * 在不挤掉已有查询方面的前提下补充缺失证据，并控制返回数量。
+ *
+ *  Fill a missing explicit query facet without displacing an already covered facet.
+ *
+ * @param hits 向量库或关键词召回得到的候选命中。
+ * @param query 用户问题或检索查询。
+ * @param topK 最终保留的检索结果数量。
+ * @returns 检索候选命中列表。
+ */
 export function selectEvidence(hits: SearchHit[], query: string, topK: number): SearchHit[] {
   const baseline = hits.slice(0, topK);
   if (topK < 2 || topK >= 20 || hits.length <= topK) return baseline;

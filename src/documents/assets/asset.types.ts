@@ -1,3 +1,6 @@
+/**
+ * @file 文档资源协议。定义图片资源元数据，并裁剪对外公开的资源信息。
+ */
 export type AssetAnalysisStatus = 'pending' | 'ready' | 'skipped' | 'failed';
 
 export interface DocumentAssetRecord {
@@ -26,6 +29,12 @@ export interface DocumentAssetRecord {
 
 export type PublicDocumentAsset = Omit<DocumentAssetRecord, 'storage_key'>;
 
+/**
+ * 裁剪内部存储字段，生成可向客户端返回的资源信息。
+ *
+ * @param asset 需要处理的图片资源记录。
+ * @returns PublicDocumentAsset 类型的处理结果。
+ */
 export function publicAsset(asset: DocumentAssetRecord): PublicDocumentAsset {
   const { storage_key: _storageKey, ...record } = asset;
   return record;

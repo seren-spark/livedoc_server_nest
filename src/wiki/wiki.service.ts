@@ -1,3 +1,6 @@
+/**
+ * @file Wiki 知识沉淀。将回答与原文编译为知识候选，校验来源版本、发布知识并提供检索。
+ */
 import {
   BadRequestException,
   ConflictException,
@@ -44,6 +47,12 @@ import {
   type WikiComparison,
 } from "./wiki.types.js";
 
+/**
+ * 对 Wiki 编译内容生成 SHA-256 指纹。
+ *
+ * @param text 待处理的文本。
+ * @returns 整理后的文本或标识。
+ */
 export const wikiHash = (text: string) =>
   createHash("sha256").update(text).digest("hex");
 
@@ -57,6 +66,16 @@ export class WikiService implements OnModuleDestroy {
   private readonly captureTails = new Map<string, Promise<void>>();
   private readonly shutdown = new AbortController();
   private readonly logger = new Logger(WikiService.name);
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param repository WikiRepository 依赖实例。
+   * @param documents 需要筛选或处理的文档集合。
+   * @param retrieval 共享知识检索服务。
+   * @param store VectorStoreService 依赖实例。
+   * @param llm 共享模型调用服务。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly repository: WikiRepository,
@@ -70,6 +89,13 @@ export class WikiService implements OnModuleDestroy {
     );
   }
 
+  /**
+   * 保存当前知识范围与文档版本指纹，供后续来源复核。
+   *
+   * @param scope 本次检索或操作允许覆盖的范围。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 知识范围与版本快照。
+   */
   async knowledgeSnapshot(scope: KnowledgeScope, context: AccessContext): Promise<WikiKnowledgeSnapshot> {
     const normalized = {
       private: scope.private, public: scope.public, team: scope.team,
@@ -78,12 +104,28 @@ export class WikiService implements OnModuleDestroy {
     return { scope: normalized, fingerprint: await this.documents.knowledgeFingerprint(normalized, context) };
   }
 
+  /**
+   * 重新计算知识范围指纹，拒绝使用已变化的来源快照。
+   *
+   * @param snapshot 任务开始时保存的文档或配置快照。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   */
   private async checkSnapshot(snapshot: WikiKnowledgeSnapshot | undefined, context: AccessContext) {
     if (!snapshot || (await this.knowledgeSnapshot(snapshot.scope, context)).fingerprint !== snapshot.fingerprint)
       throw new ConflictException("知识范围已变化或未记录，请重新检索原文");
   }
 
-  /** Answer delivery owns its terminal state; compilation has a separate lifetime. */
+  /**
+   * 把回答交付后的知识编译排入独立队列，不改变回答本身的终态。
+   *
+   *  Answer delivery owns its terminal state; compilation has a separate lifetime.
+   *
+   * @param run 当前 Agent 运行记录。
+   * @param answer 本轮生成的回答文本。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param wikiReads 本轮任务实际读取的 Wiki 来源证明。
+   * @param record 待处理的业务记录。
+   */
   enqueueCapture(
     run: AgentRunRecord,
     answer: string,
@@ -211,9 +253,19 @@ export class WikiService implements OnModuleDestroy {
     this.captureJobs.set(run.run_id, job);
     this.captureTails.set(key, job);
   }
+  /**
+   * 等待当前排队的知识沉淀任务结束。
+   */
   async waitForCaptures(): Promise<void> {
     await Promise.allSettled([...this.captureJobs.values()]);
   }
+  /**
+   * 将回答质量反馈传递到对应的知识候选状态。
+   *
+   * @param run 当前 Agent 运行记录。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param action 本次请求执行的操作类型。
+   */
   async answerFeedback(
     run: AgentRunRecord,
     context: AccessContext,
@@ -237,6 +289,13 @@ export class WikiService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * 撤回已发布内容，并使相应检索入口失效。
+   *
+   * @param proofs 引用来源读取时保存的身份与版本证明。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param rejected 是否已被用户拒绝。
+   */
   private async withdraw(proofs: WikiProof[], context: AccessContext, rejected = false) {
     const roots = (await Promise.all(proofs.map(proof => this.repository.get(proof.wiki_id, context))))
       .filter((page): page is WikiPage => Boolean(page && proofs.some(proof =>
@@ -258,6 +317,17 @@ export class WikiService implements OnModuleDestroy {
       await this.store.deleteDocument(id).catch(() => this.logger.warn("Withdrawn Wiki vector cleanup deferred"));
   }
 
+  /**
+   * 评估 Wiki 页面是否足以覆盖当前问题，并识别仍需回查的原文。
+   *
+   * @param question 需要回答或继续检索的问题。
+   * @param query 用户问题或检索查询。
+   * @param pages 本次涉及的分页数据。
+   * @param signal 取消信号，用于中止请求和后台处理。
+   * @param totals 待汇总的数量或分数。
+   * @param runtimeTurn 取消信号，用于中止请求和后台处理（可选）。
+   * @returns WikiCoverageResult 类型的处理结果。
+   */
   async coverage(
     question: string,
     query: string,
@@ -268,6 +338,16 @@ export class WikiService implements OnModuleDestroy {
   ): Promise<WikiCoverageResult> {
     const usage = { model_requests: 0, prompt_tokens: 0, completion_tokens: 0 };
     try {
+      /**
+       * 在上下文预算内发起 Wiki 阶段模型调用，并累计资源用量。
+       *
+       * @param role 本次模型或 Worker 执行角色。
+       * @param system 约束模型当前阶段行为的系统提示词。
+       * @param value 待校验或转换的值。
+       * @param signal 取消信号，用于中止请求和后台处理。
+       * @param usage 已使用或待累计的模型与工具用量。
+       * @returns any 类型的处理结果。
+       */
       const turn = async (role: "critic", system: string, value: unknown, signal: AbortSignal,
         usage: WikiPage["payload"]["usage"]) => runtimeTurn
         ? parseModelJson((await runtimeTurn([{ role: "system", content: system },
@@ -308,10 +388,19 @@ export class WikiService implements OnModuleDestroy {
           total[key] += usage[key];
     }
   }
+  /**
+   * 在模块关闭时停止后台工作并释放连接与资源。
+   */
   async onModuleDestroy(): Promise<void> {
     this.shutdown.abort();
     await this.waitForCaptures();
   }
+  /**
+   * 计算知识沉淀输入摘要，作为重复候选的识别依据。
+   *
+   * @param origin 当前知识候选保存的来源描述。
+   * @returns 整理后的文本或标识。
+   */
   private captureHash(origin: WikiOrigin): string {
     return wikiHash(
       JSON.stringify([
@@ -321,6 +410,12 @@ export class WikiService implements OnModuleDestroy {
       ]),
     );
   }
+  /**
+   * 生成区分来源文档及其版本的稳定标识。
+   *
+   * @param source 当前来源内容或来源记录。
+   * @returns 整理后的文本或标识。
+   */
   private sourceKey(source: WikiSource): string {
     return JSON.stringify([
       source.doc_id,
@@ -331,7 +426,19 @@ export class WikiService implements OnModuleDestroy {
     ]);
   }
 
-  /** Persist only a verified answer hash and stable source coordinates in the run audit. */
+  /**
+   * 只保存已验证回答的摘要和稳定来源坐标，供后续知识沉淀追溯。
+   *
+   *  Persist only a verified answer hash and stable source coordinates in the run audit.
+   *
+   * @param result 当前待处理的 Agent 候选结果。
+   * @param citations 本次实际可用的引用证据集合。
+   * @param question 需要回答或继续检索的问题。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param proofs 引用来源读取时保存的身份与版本证明。
+   * @param snapshot 任务开始时保存的文档或配置快照（可选）。
+   * @returns WikiOrigin 类型的处理结果；未找到或不可用时可能为空。
+   */
   async origin(
     result: AgentResult,
     citations: AgentCitation[],
@@ -410,6 +517,13 @@ export class WikiService implements OnModuleDestroy {
     };
   }
 
+  /**
+   * 重新校验来源文档权限、版本和片段摘要，再读取原文。
+   *
+   * @param source 当前来源内容或来源记录。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 知识文档记录。
+   */
   private async source(
     source: WikiSource,
     context: AccessContext,
@@ -439,6 +553,13 @@ export class WikiService implements OnModuleDestroy {
       },
     };
   }
+  /**
+   * 检查知识页的来源状态，并读取其可使用的原文证据。
+   *
+   * @param page 当前页码或页面记录。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 知识文档记录列表。
+   */
   private async evidence(page: WikiPage, context: AccessContext) {
     const sources = await Promise.all(
       page.payload.sources.map((source) => this.source(source, context)),
@@ -449,6 +570,13 @@ export class WikiService implements OnModuleDestroy {
     await this.checkSnapshot(page.payload.knowledge_snapshot, context);
     return sources;
   }
+  /**
+   * 检查已读取 Wiki 页面与保存的来源证明仍一致。
+   *
+   * @param proofs 引用来源读取时保存的身份与版本证明。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param snapshot 任务开始时保存的文档或配置快照（可选）。
+   */
   async validateProofs(proofs: WikiProof[], context: AccessContext, snapshot?: WikiKnowledgeSnapshot | null) {
     if (proofs.length && snapshot !== undefined) await this.checkSnapshot(snapshot ?? undefined, context);
     for (const proof of proofs) {
@@ -457,16 +585,37 @@ export class WikiService implements OnModuleDestroy {
       await this.evidence(page, context);
     }
   }
+  /**
+   * 核对页面身份与版本，拒绝失效的知识来源证明。
+   *
+   * @param page 当前页码或页面记录。
+   * @param proof 读取知识来源时保存的身份与版本证明。
+   */
   private assertProof(page: WikiPage, proof: WikiProof) {
     if (page.status !== "published" || page.revision !== proof.revision || page.payload.conflicted_by_run)
       throw new ConflictException("已使用的 Wiki 发生变化，请重新生成回答");
   }
+  /**
+   * 读取必需的Wiki 知识页，不存在时抛出错误。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns Wiki 知识页面。
+   */
   async require(id: string, context: AccessContext) {
     const page = await this.repository.get(id, context);
     if (!page || page.status === "archived")
       throw new NotFoundException("Wiki 不存在");
     return page;
   }
+  /**
+   * 生成客户端知识页面视图，并补充来源有效性信息。
+   *
+   * @param page 当前页码或页面记录。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param content 待处理的正文内容。
+   * @returns Agent 引用来源列表；未找到或不可用时可能为空。
+   */
   private async view(page: WikiPage, context: AccessContext, content: boolean) {
     let sourceStatus: WikiSourceStatus = "valid";
     let citations: AgentCitation[] = [];
@@ -504,6 +653,12 @@ export class WikiService implements OnModuleDestroy {
       updated_at: page.updated_at,
     };
   }
+  /**
+   * 按查询条件读取Wiki 知识页列表。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns Agent 引用来源列表；未找到或不可用时可能为空。
+   */
   async list(context: AccessContext) {
     return {
       items: await Promise.all(
@@ -513,10 +668,26 @@ export class WikiService implements OnModuleDestroy {
       ),
     };
   }
+  /**
+   * 按标识读取Wiki 知识页。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns Agent 引用来源列表；未找到或不可用时可能为空。
+   */
   async get(id: string, context: AccessContext) {
     return this.view(await this.require(id, context), context, true);
   }
 
+  /**
+   * 基于原文和回答生成知识候选，校验引用与来源关系。
+   *
+   * @param run 当前 Agent 运行记录。
+   * @param answer 本轮生成的回答文本。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param signal 取消信号，用于中止请求和后台处理。
+   * @returns Agent 引用来源列表；未找到或不可用时可能为空。
+   */
   async candidate(
     run: AgentRunRecord,
     answer: string,
@@ -714,6 +885,13 @@ export class WikiService implements OnModuleDestroy {
       this.active.delete(key);
     }
   }
+  /**
+   * 解析模型给出的知识对比结果。
+   *
+   * @param value 待校验或转换的值。
+   * @param related 与当前内容关联的记录（可选）。
+   * @returns WikiComparison 类型的处理结果；未找到或不可用时可能为空。
+   */
   private parseComparison(value: any, related?: WikiPage): WikiComparison | undefined {
     if (value === undefined || value === null) return undefined;
     if (!related || value.wiki_id !== related.wiki_id || value.revision !== related.revision ||
@@ -722,6 +900,13 @@ export class WikiService implements OnModuleDestroy {
     return value;
   }
 
+  /**
+   * 为候选与既有知识对比整理来源信息。
+   *
+   * @param origin 当前知识候选保存的来源描述。
+   * @param page 当前页码或页面记录。
+   * @returns 整理后的结果列表。
+   */
   private comparisonSources(origin: WikiOrigin, page: WikiPage): WikiSource[] {
     const sources = new Map<string, WikiSource>();
     for (const source of [...origin.sources, ...page.payload.sources]) {
@@ -731,6 +916,14 @@ export class WikiService implements OnModuleDestroy {
     return [...sources.values()];
   }
 
+  /**
+   * 将编译输出的引用标记重新绑定到已验证来源。
+   *
+   * @param markdown 待解析或写入的 Markdown 原文。
+   * @param previous 更新前的状态。
+   * @param current 当前记录、节点或选中值。
+   * @returns 整理后的文本或标识。
+   */
   private rebindCitations(markdown: string, previous: WikiSource[], current: WikiSource[]) {
     for (const source of previous) {
       const key = this.sourceKey(source);
@@ -740,6 +933,14 @@ export class WikiService implements OnModuleDestroy {
     return markdown;
   }
 
+  /**
+   * 查找与当前知识候选相关的既有页面。
+   *
+   * @param origin 当前知识候选保存的来源描述。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param signal 取消信号，用于中止请求和后台处理。
+   * @returns Wiki 知识页面；未找到或不可用时可能为空。
+   */
   private async relatedPage(origin: WikiOrigin, context: AccessContext, signal: AbortSignal): Promise<WikiPage | undefined> {
     if (!origin.knowledge_snapshot) return;
     try {
@@ -757,6 +958,12 @@ export class WikiService implements OnModuleDestroy {
       return;
     }
   }
+  /**
+   * 检查编译后的知识内容、引用和来源是否满足发布条件。
+   *
+   * @param value 待校验或转换的值。
+   * @param origin 当前知识候选保存的来源描述。
+   */
   private validateCompiled(value: any, origin: WikiOrigin) {
     if (
       !value ||
@@ -774,6 +981,11 @@ export class WikiService implements OnModuleDestroy {
     )
       throw new BadRequestException("Wiki 候选格式或来源无效");
     validateAgentMarkdown(value.markdown);
+    /**
+     * 验证知识页中的内部引用链接是否合法且可用。
+     *
+     * @param node 当前语法树或编辑器节点。
+     */
     const checkLinks = (node: any) => {
       if (["link", "linkReference", "definition"].includes(node.type))
         throw new BadRequestException("Wiki 候选仅允许已核实的来源标记");
@@ -793,6 +1005,16 @@ export class WikiService implements OnModuleDestroy {
     )
       throw new BadRequestException("Wiki 正文含未知引用");
   }
+  /**
+   * 在上下文预算内发起 Wiki 阶段模型调用，并累计资源用量。
+   *
+   * @param role 本次模型或 Worker 执行角色。
+   * @param system 约束模型当前阶段行为的系统提示词。
+   * @param value 待校验或转换的值。
+   * @param signal 取消信号，用于中止请求和后台处理。
+   * @param usage 已使用或待累计的模型与工具用量。
+   * @returns any 类型的处理结果。
+   */
   private async turn(
     role: "plan" | "critic",
     system: string,
@@ -834,6 +1056,15 @@ export class WikiService implements OnModuleDestroy {
     return parseModelJson(response.message.content ?? "");
   }
 
+  /**
+   * 校验当前候选或草稿后发布，并协调对应索引状态。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param revision 调用方读取到的状态修订号。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param signal 取消信号，用于中止请求和后台处理。
+   * @returns Agent 引用来源列表；未找到或不可用时可能为空。
+   */
   async publish(
     id: string,
     revision: number,
@@ -884,12 +1115,26 @@ export class WikiService implements OnModuleDestroy {
       throw error;
     }
   }
+  /**
+   * 撤回当前知识页及其检索入口，返回删除结果。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async remove(id: string, context: AccessContext) {
     const page = await this.repository.get(id, context);
     if (!page) throw new NotFoundException("Wiki 不存在");
     await this.withdraw([{ wiki_id: page.wiki_id, revision: page.revision }], context);
     return { status: "deleted" };
   }
+  /**
+   * 判断知识页是否落在本次请求指定的知识范围内。
+   *
+   * @param document 当前知识文档记录。
+   * @param scope 本次检索或操作允许覆盖的范围。
+   * @returns 条件是否满足的判断结果。
+   */
   private inScope(document: DocumentRecord, scope: KnowledgeScope) {
     return (
       (!scope.document_ids?.length ||
@@ -897,6 +1142,15 @@ export class WikiService implements OnModuleDestroy {
       Boolean(scope[document.visibility])
     );
   }
+  /**
+   * 对非强时效问题检索已发布知识，重新检查来源后返回可采用的证据。
+   *
+   * @param query 用户问题或检索查询。
+   * @param scope 本次检索或操作允许覆盖的范围。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param signal 取消信号，用于中止请求和后台处理。
+   * @returns 整理后的结果列表。
+   */
   async search(
     query: string,
     scope: KnowledgeScope,
@@ -906,6 +1160,12 @@ export class WikiService implements OnModuleDestroy {
     if (isTimeSensitive(query)) return [];
     const snapshot = await this.knowledgeSnapshot(scope, context);
     const valid = new Map<string, AgentCitation[]>();
+    /**
+     * 检查当前记录是否满足后续使用的有效性条件。
+     *
+     * @param page 当前页码或页面记录。
+     * @returns Agent 引用来源列表；未找到或不可用时可能为空。
+     */
     const eligible = async (page: WikiPage) => {
       if (page.status !== "published" || page.payload.knowledge_snapshot?.fingerprint !== snapshot.fingerprint)
         return;
@@ -916,6 +1176,12 @@ export class WikiService implements OnModuleDestroy {
         if (!(error instanceof ForbiddenException || error instanceof NotFoundException || error instanceof ConflictException)) throw error;
       }
     };
+    /**
+     * 校验 Wiki 检索候选的所有关联来源，剔除不可用内容。
+     *
+     * @param hits 向量库或关键词召回得到的候选命中。
+     * @returns 检索候选命中列表。
+     */
     const authorize = async (hits: SearchHit[]) => {
       valid.clear();
       const pages = await this.repository.getMany([...new Set(hits.map(hit => String(hit.payload.doc_id)))], context);

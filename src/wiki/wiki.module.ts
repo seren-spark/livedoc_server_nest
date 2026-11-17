@@ -1,3 +1,6 @@
+/**
+ * @file Wiki 知识模块。组装知识编译、来源校验、存储和检索依赖。
+ */
 import { Module } from "@nestjs/common";
 import { DocumentsModule } from "../documents/documents.module.js";
 import { RetrievalModule } from "../retrieval/retrieval.module.js";

@@ -1,3 +1,6 @@
+/**
+ * @file 导入 Worker 入口。启动独立导入消费循环，并在退出信号到达时释放应用资源。
+ */
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { hostname } from 'node:os';
@@ -13,6 +16,9 @@ const worker = app.get(ImportWorkerService);
 const imports = app.get(DocumentImportsService);
 const workerId = `${hostname()}-import-${process.pid}`;
 let closing = false;
+/**
+ * 收到退出信号时停止领取新导入任务，让循环进入收尾。
+ */
 const stop = () => { closing = true; };
 process.once('SIGINT', stop);
 process.once('SIGTERM', stop);

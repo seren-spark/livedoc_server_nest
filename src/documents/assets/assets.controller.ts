@@ -1,3 +1,6 @@
+/**
+ * @file 文档资源接口。提供图片上传、带权限的内容读取和图片说明重试入口。
+ */
 import { Controller, Get, Param, PayloadTooLargeException, Post, Req, StreamableFile } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import { CurrentAccess } from '../../auth/access-context.decorator.js';
@@ -12,6 +15,15 @@ import { ArticleRepository } from '../../articles/article.repository.js';
 
 @Controller()
 export class AssetsController {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param assets 当前文档关联的资源集合。
+   * @param documents 需要筛选或处理的文档集合。
+   * @param imports DocumentImportsService 依赖实例。
+   * @param vision VisionService 依赖实例。
+   * @param articleDrafts ArticleRepository 依赖实例。
+   */
   constructor(
     private readonly assets: AssetsService,
     private readonly documents: DocumentsService,
@@ -20,6 +32,13 @@ export class AssetsController {
     private readonly articleDrafts: ArticleRepository,
   ) {}
 
+  /**
+   * 接收图片文件并保存为当前用户的文档资源。
+   *
+   * @param request 当前 Fastify HTTP 请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 当前步骤的处理结果。
+   */
   @Post('assets')
   async upload(@Req() request: FastifyRequest, @CurrentAccess() context: AccessContext) {
     const file = await requireMultipartFile(request);
@@ -39,6 +58,13 @@ export class AssetsController {
     return publicAsset(record);
   }
 
+  /**
+   * 校验资源访问权限后，以文件流返回图片内容。
+   *
+   * @param assetId 图片资源标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns StreamableFile 类型的处理结果。
+   */
   @Get('assets/:asset_id/content')
   async content(@Param('asset_id') assetId: string, @CurrentAccess() context: AccessContext) {
     const asset = await this.assets.require(assetId);
@@ -52,6 +78,13 @@ export class AssetsController {
     });
   }
 
+  /**
+   * 为图片重新发起内容说明分析。
+   *
+   * @param assetId 图片资源标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 当前步骤的处理结果。
+   */
   @Post('assets/:asset_id/retry')
   async retryDescription(@Param('asset_id') assetId: string, @CurrentAccess() context: AccessContext) {
     const asset = await this.assets.require(assetId);

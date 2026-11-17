@@ -1,3 +1,6 @@
+/**
+ * @file 文章生命周期。协调草稿版本、正式发布、撤回、资源清理和异步索引。
+ */
 import {
   ConflictException,
   Injectable,
@@ -35,6 +38,17 @@ import { ArticleInteractionsRepository } from './article-interactions.repository
 
 @Injectable()
 export class ArticlesService {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param repository ArticleRepository 依赖实例。
+   * @param documents 需要筛选或处理的文档集合。
+   * @param assets 当前文档关联的资源集合。
+   * @param jobs 后台任务队列服务。
+   * @param vectors VectorStoreService 依赖实例。
+   * @param config 应用运行配置。
+   * @param interactions ArticleInteractionsRepository 依赖实例（可选）。
+   */
   constructor(
     private readonly repository: ArticleRepository,
     private readonly documents: DocumentsService,
@@ -45,6 +59,13 @@ export class ArticlesService {
     @Optional() private readonly interactions?: ArticleInteractionsRepository,
   ) {}
 
+  /**
+   * 根据输入创建文章草稿并返回结果。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param requestedId requested 对应的唯一标识（可选）。
+   * @returns 文章草稿记录。
+   */
   async create(
     context: AccessContext,
     requestedId?: string,
@@ -100,6 +121,13 @@ export class ArticlesService {
     return record;
   }
 
+  /**
+   * 读取并返回当前用户有权编辑的文章。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 时间对象列表；未找到或不可用时可能为空。
+   */
   async own(id: string, context: AccessContext) {
     const article = await this.repository.requireOwner(id, context);
     const document = await this.documents.get(id);
@@ -119,6 +147,14 @@ export class ArticlesService {
     };
   }
 
+  /**
+   * 保存文章草稿的当前数据。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param request 当前业务请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 时间对象列表；未找到或不可用时可能为空。
+   */
   async save(id: string, request: ArticleSaveDto, context: AccessContext) {
     await this.repository.requireOwner(id, context);
     const draft = {
@@ -156,6 +192,15 @@ export class ArticlesService {
     return this.own(id, context);
   }
 
+  /**
+   * 校验当前候选或草稿后发布，并协调对应索引状态。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param expectedVersion 调用方期望操作的内容版本。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param includeInKnowledge 发布后是否将文章纳入知识库检索（可选）。
+   * @returns 时间对象列表；未找到或不可用时可能为空。
+   */
   async publish(id: string, expectedVersion: number, context: AccessContext, includeInKnowledge?: boolean) {
     let previousAssets: string[] = [];
     await this.write(id, context, async (article, manager) => {
@@ -244,6 +289,14 @@ export class ArticlesService {
     return result;
   }
 
+  /**
+   * 撤回已发布内容，并使相应检索入口失效。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param expectedVersion 调用方期望操作的内容版本。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 时间对象列表；未找到或不可用时可能为空。
+   */
   async withdraw(id: string, expectedVersion: number, context: AccessContext) {
     await this.write(id, context, async (article, manager) => {
       this.assertVersion(article, expectedVersion);
@@ -280,6 +333,14 @@ export class ArticlesService {
     return result;
   }
 
+  /**
+   * 检查当前状态后重新提交失败的任务。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param expectedVersion 调用方期望操作的内容版本。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 时间对象列表；未找到或不可用时可能为空。
+   */
   async retry(id: string, expectedVersion: number, context: AccessContext) {
     await this.write(id, context, async (article, manager) => {
       this.assertVersion(article, expectedVersion);
@@ -307,6 +368,12 @@ export class ArticlesService {
     return this.own(id, context);
   }
 
+  /**
+   * 读取文章正式发布快照，排除未发布草稿内容。
+   *
+   * @param record 当前知识文档记录。
+   * @returns PublicArticle 类型的处理结果。
+   */
   async publicRecord(record: DocumentRecord): Promise<PublicArticle> {
     const article = await this.repository.get(record.doc_id);
     if (article && article.state !== "published")
@@ -333,6 +400,13 @@ export class ArticlesService {
     };
   }
 
+  /**
+   * 校验图片属于有效公开文章后，返回公开可读的资源。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param assetId 图片资源标识。
+   * @returns 当前步骤的处理结果。
+   */
   async publicAsset(id: string, assetId: string) {
     const doc = await this.documents.getPublicArticle(id);
     const article = await this.repository.get(id);
@@ -357,6 +431,12 @@ export class ArticlesService {
     return asset;
   }
 
+  /**
+   * 检查请求携带的期望版本，避免覆盖其他更新。
+   *
+   * @param article 当前文章草稿或发布记录。
+   * @param version 本次操作对应的内容版本。
+   */
   private assertVersion(article: ArticleDraft, version: number) {
     if (article.draft_version !== version)
       throw new ConflictException({
@@ -365,6 +445,12 @@ export class ArticlesService {
         current_version: article.draft_version,
       });
   }
+  /**
+   * 取消与当前内容版本相关的后台任务。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param manager 当前数据库事务执行器（可选）。
+   */
   private async cancelJobs(id: string, manager?: EntityManager) {
     if (manager) await manager.query(
       `UPDATE index_jobs SET status='canceled',dedupe_key=NULL,worker_id=NULL,lease_expires_at=NULL,
@@ -373,6 +459,13 @@ export class ArticlesService {
     );
     else await this.jobs.cancelDocument(id);
   }
+  /**
+   * 清理已结束或过期操作留下的资源。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param candidates 待筛选的候选集合。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   */
   private async cleanup(
     id: string,
     candidates: string[],
@@ -399,6 +492,13 @@ export class ArticlesService {
       );
     }
   }
+  /**
+   * 读取文章对应的知识文档快照；事务路径中同时锁定该记录。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param manager 当前数据库事务执行器（可选）。
+   * @returns 知识文档记录；未找到或不可用时可能为空。
+   */
   private async snapshot(id: string, manager?: EntityManager) {
     if (!manager) return this.documents.get(id);
     const rows = await manager.query(
@@ -407,6 +507,13 @@ export class ArticlesService {
     );
     return rows[0] ? mapDocumentRow(rows[0]) : null;
   }
+  /**
+   * 在事务或按文章串行的内存写入中校验归属，执行一次文章状态变更。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param work 当前数据库事务执行器。
+   */
   private async write(
     id: string,
     context: AccessContext,

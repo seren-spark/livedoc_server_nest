@@ -1,19 +1,59 @@
+/**
+ * @file RAG 评测逻辑。校验语料与标注，计算排名、证据覆盖和回答质量并汇总结果。
+ */
 import { sha256 } from './evidence.js';
 
 export type Json = Record<string, any>;
+/**
+ * 将结构化数据转换为顺序稳定的表示。
+ *
+ * @param value 待校验或转换的值。
+ * @returns 整理后的文本或标识。
+ */
 export const canonical = (value: any): string => Array.isArray(value) ? `[${value.map(canonical).join(',')}]`
   : value && typeof value === 'object' ? `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${canonical(value[k])}`).join(',')}}` : JSON.stringify(value);
+/**
+ * 根据当前输入生成稳定指纹，用于识别配置或内容变化。
+ *
+ * @param value 待校验或转换的值。
+ * @returns 整理后的文本或标识。
+ */
 export const fingerprint = (value: any) => sha256(canonical(value));
+/**
+ * 将输入转换为比较和去重使用的规范形式。
+ *
+ * @param text 待处理的文本。
+ * @returns 整理后的文本或标识。
+ */
 const normalize = (text: any) => String(text ?? '').normalize('NFKC').replace(/\s+/gu, '').toLowerCase();
+/**
+ * 计算有效样本的算术平均值。
+ *
+ * @param values 待转换或去重的值集合。
+ * @returns 计算得到的数值；未找到或不可用时可能为空。
+ */
 export const mean = (values: Array<number | null | undefined>) => {
   const valid = values.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
   return valid.length ? valid.reduce((a, b) => a + b, 0) / valid.length : null;
 };
+/**
+ * 从样本分布中计算指定分位数。
+ *
+ * @param values 待转换或去重的值集合。
+ * @param q 查询关键词或列表筛选条件。
+ * @returns 计算得到的数值；未找到或不可用时可能为空。
+ */
 export function percentile(values: number[], q: number) {
   const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
   return sorted.length ? sorted[Math.floor((sorted.length - 1) * q)]! : null;
 }
 
+/**
+ * 检查评测语料、案例与引用标注的一致性。
+ *
+ * @param corpus 参与评测的原始语料。
+ * @param cases 需要运行的评测案例。
+ */
 export function validateAssets(corpus: Json[], cases: Json[]) {
   if (!corpus.length || !cases.length) throw new Error('语料与题集不能为空');
   const docs = new Map<string, Json>(), ids = new Set<string>();
@@ -42,6 +82,14 @@ export function validateAssets(corpus: Json[], cases: Json[]) {
   }
 }
 
+/**
+ * 按标注要求计算单条证据的相关性得分。
+ *
+ * @param groups 按照预算或业务条件划分的数据组。
+ * @param citations 本次实际可用的引用证据集合。
+ * @param quotes 原文引用片段集合。
+ * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+ */
 export function scoreEvidence(groups: Json[], citations: Json[], quotes = false) {
   if (!groups.length) return { all: null, recall: null, groups: [] };
   const byDoc = new Map<string, string[]>();
@@ -53,6 +101,14 @@ export function scoreEvidence(groups: Json[], citations: Json[], quotes = false)
   return { all: rows.every(r => r.hit), recall: rows.filter(r => r.hit).length / rows.length, groups: rows };
 }
 
+/**
+ * 计算文档级检索排名指标。
+ *
+ * @param expected 调用方期望的值或状态。
+ * @param returned 本次检索实际返回的结果。
+ * @param k 需要统计或保留的排名位置。
+ * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+ */
 export function rankingMetrics(expected: string[], returned: string[], k: number) {
   if (!expected.length) return { recall: null, mrr: null, ndcg: null };
   const relevant = new Set(expected), ranked = returned.slice(0, k), seen = new Set<string>();
@@ -66,6 +122,13 @@ export function rankingMetrics(expected: string[], returned: string[], k: number
     mrr: rank < 0 ? 0 : 1 / (rank + 1), ndcg: dcg / ideal };
 }
 
+/**
+ * 检查检索标注中的相关来源和分块标识是否有效。
+ *
+ * @param corpus 参与评测的原始语料。
+ * @param cases 需要运行的评测案例。
+ * @param manifest 评测分块或来源清单。
+ */
 export function validateRetrievalLabels(corpus: Json[], cases: Json[], manifest: Json) {
   const chunks = new Map<string, Json>(manifest.chunks.map((c: Json) => [c.chunk_id, c]));
   if (chunks.size !== manifest.chunks.length || !chunks.size) throw new Error('分块 ID 重复或为空');
@@ -93,6 +156,13 @@ export function validateRetrievalLabels(corpus: Json[], cases: Json[], manifest:
   }
 }
 
+/**
+ * 对单次检索结果应用标注并计算各项得分。
+ *
+ * @param c 当前用户、空间与团队的访问身份。
+ * @param search 本次检索结果或检索配置。
+ * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+ */
 export function gradeRetrieval(c: Json, search: Json | null) {
   const debug = search?.retrieval_debug;
   if (debug?.schema_version !== 1 || debug.candidate_stage !== 'authorized_fused_before_rerank'
@@ -109,6 +179,14 @@ export function gradeRetrieval(c: Json, search: Json | null) {
     no_authorized_evidence: !relevant.length };
 }
 
+/**
+ * 计算分块级检索的命中与排序指标。
+ *
+ * @param qrels 查询与相关来源之间的标注关系。
+ * @param returned 本次检索实际返回的结果。
+ * @param k 需要统计或保留的排名位置。
+ * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+ */
 export function chunkRankingMetrics(qrels: Json[], returned: string[], k: number) {
   const positive = qrels.filter(q => q.score > 0), grades = new Map(positive.map(q => [q.chunk_id, q.score]));
   const score = rankingMetrics(positive.map(q => q.chunk_id), returned, k);
@@ -123,6 +201,14 @@ export function chunkRankingMetrics(qrels: Json[], returned: string[], k: number
   return { ...score, ndcg: dcg / ideal };
 }
 
+/**
+ * 汇总单个评测案例的检索及回答得分。
+ *
+ * @param c 当前用户、空间与团队的访问身份。
+ * @param search 本次检索结果或检索配置。
+ * @param answer 本轮生成的回答文本。
+ * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+ */
 export function gradeCase(c: Json, search: Json | null, answer: Json | null) {
   const retrieved: Json[] = search?.citations ?? [], cited: Json[] = answer?.citations ?? [];
   const snapshot = answer?.evidence_snapshot;
@@ -168,6 +254,14 @@ export function gradeCase(c: Json, search: Json | null, answer: Json | null) {
   };
 }
 
+/**
+ * 执行内容汇总流程并返回摘要结果。
+ *
+ * @param results 已经完成的步骤或评测结果。
+ * @param topK 最终保留的检索结果数量。
+ * @param retrievalOnly 是否只运行检索评测而不生成回答。
+ * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+ */
 export function summarize(results: Json[], topK: number, retrievalOnly = false) {
   const ranks = results.filter(r => r.search).map(r => rankingMetrics(r.relevant_doc_ids ?? [], r.grade.returned_doc_ids, topK));
   const grades = results.map(r => r.grade);
@@ -207,19 +301,46 @@ export function summarize(results: Json[], topK: number, retrievalOnly = false) 
 }
 
 // Resample whole questions, never treat multiple permutations of one question as independent.
+/**
+ * 以完整问题为单位重采样，估计成对评分差异及置信区间。
+ *
+ * @param differences 按问题配对得到的评分差异。
+ * @param iterations 重采样或迭代执行次数。
+ * @param seed 使评测抽样可复现的随机种子。
+ * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+ */
 export function pairedBootstrap(differences: number[], iterations = 2000, seed = 20261019) {
   if (!differences.length) return { delta: null, ci95: null, questions: 0 };
   let state = seed >>> 0;
+  /**
+   * 生成评测抽样使用的可复现伪随机数。
+   *
+   * @returns 计算得到的数值。
+   */
   const random = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; };
   const samples = Array.from({ length: iterations }, () => differences.reduce(sum => sum + differences[Math.floor(random() * differences.length)]!, 0) / differences.length);
   return { delta: mean(differences), ci95: [percentile(samples, .025), percentile(samples, .975)], questions: differences.length, iterations };
 }
 
+/**
+ * 根据分级相关性计算检索排序质量。
+ *
+ * @param items 需要处理的条目集合。
+ * @param order 当前条目的排列顺序。
+ * @param k 需要统计或保留的排名位置。
+ * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+ */
 export function scoreGradedRanking(items: Json[], order: string[], k: number) {
   const labels = new Map(items.map(item => [item.id, item.relevance as number]));
   if (labels.size !== items.length || order.length !== items.length || new Set(order).size !== items.length || order.some(id => !labels.has(id))
     || items.some(item => ![0, 1, 2].includes(item.relevance)) || !items.some(item => item.relevance === 2))
     throw new Error('候选标签无效或重排结果不是完整排列');
+  /**
+   * 计算折损累计增益，为 NDCG 等排序指标提供基础值。
+   *
+   * @param grades 已完成案例的评分。
+   * @returns 计算得到的数值。
+   */
   const dcg = (grades: number[]) => grades.slice(0, k).reduce((sum, grade, i) => sum + (2 ** grade - 1) / Math.log2(i + 2), 0);
   const ideal = dcg([...labels.values()].sort((a, b) => b - a));
   const ranks = rankingMetrics(items.filter(item => item.relevance === 2).map(item => item.id), order, k);

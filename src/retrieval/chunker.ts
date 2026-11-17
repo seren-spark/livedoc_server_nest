@@ -1,3 +1,6 @@
+/**
+ * @file Markdown 结构化分块。沿 AST 块、标题和句子边界切块，控制 Token 预算并保留原文偏移。
+ */
 import { createHash } from "node:crypto";
 import { codeRanges, OversizedCodeError } from "./code-boundaries.js";
 import { parseMarkdown, protectedRanges, sentenceRanges, walkMarkdown, type MarkdownNode } from "./markdown-structure.js";
@@ -55,7 +58,16 @@ type PassageInput = Pick<Chunk, "title" | "heading_path" | "content" | "retrieva
 
 export class UnsplittableMarkdownError extends Error {}
 
-/** Reuse structure rules with the generation tokenizer; skip only indivisible oversized units. */
+/**
+ * 沿 Markdown 结构生成预算内的压缩单元，跳过不可再分的超长内容。
+ *
+ *  Reuse structure rules with the generation tokenizer; skip only indivisible oversized units.
+ *
+ * @param content 待处理的正文内容。
+ * @param budget 本次处理允许使用的 Token 或调用预算。
+ * @param countTokens 计算文本 Token 数的分词回调。
+ * @returns 整理后的结果列表。
+ */
 export function markdownCompressionUnits(
   content: string,
   budget: number,
@@ -162,12 +174,22 @@ function resolveChunkingOptions(
   return { maxTokens, overlapTokens, countTokens: options.countTokens ?? estimateTokens };
 }
 
+/**
+ * 组合标题、章节路径与检索正文，生成完整 Embedding 输入。
+ *
+ * @param chunk 当前索引分块。
+ * @returns 整理后的文本或标识。
+ */
 export function buildChunkPassage(chunk: PassageInput): string {
   return `${buildPassagePrefix(chunk.title, chunk.heading_path)}\n${chunk.retrieval_content ?? chunk.content}`;
 }
 
 /**
  * 将 Markdown 解析为 AST, 再提取为 Block 数组。这就是 GFM 解析发生的地方。
+ *
+ * @param markdown 待解析或写入的 Markdown 原文。
+ * @param countTokens 计算文本 Token 数的分词回调。
+ * @returns 整理后的结果列表。
  */
 function parseMarkdownBlocks(markdown: string, countTokens = estimateTokens): Block[] {
   //fromMarkdown:将 Markdown 文本解析为 mdast 语法树（一个 Root 节点）
@@ -242,6 +264,9 @@ function parseMarkdownBlocks(markdown: string, countTokens = estimateTokens): Bl
 }
 /**
  * 将 mdast 节点类型映射为 BlockType
+ *
+ * @param node 当前语法树或编辑器节点。
+ * @returns BlockType 类型的处理结果。
  */
 function blockType(node: MarkdownNode): BlockType {
   if (node.type === "heading") return "heading";
@@ -255,6 +280,9 @@ function blockType(node: MarkdownNode): BlockType {
 }
 /**
  * 递归提取节点中的所有文本。优先取 value（文本节点、代码节点），其次取 alt（图片），否则递归处理 children。用于提取标题文本。
+ *
+ * @param node 当前语法树或编辑器节点。
+ * @returns 整理后的文本或标识。
  */
 function extractNodeText(node: unknown): string {
   if (!node || typeof node !== "object") return "";
@@ -269,6 +297,11 @@ function extractNodeText(node: unknown): string {
 }
 /**
  * 更新 headingPath：比如遇到 ## 安装（depth=2），就把 path 截断到 level 1，再追加当前标题文本
+ *
+ * @param path 目标文件路径或节点层级路径。
+ * @param level 当前标题或分类的层级。
+ * @param text 待处理的文本。
+ * @returns 整理后的字符串列表。
  */
 function updateHeadingPath(
   path: string[],
@@ -285,6 +318,10 @@ function updateHeadingPath(
  *  path: # 概述 > ## 安装 > ### Linux
  *
  * [chunk 正文内容]
+ *
+ * @param title 文档或界面标题。
+ * @param headingPath 当前块所属的标题层级路径。
+ * @returns 整理后的文本或标识。
  */
 function buildPassagePrefix(title: string, headingPath: string[]): string {
   //总元数据预算 96 token，title 先占 1/3，即 32 token。
@@ -304,6 +341,13 @@ function buildPassagePrefix(title: string, headingPath: string[]): string {
   return `title: ${compactTitle}\npath: ${compactPath}`;
 }
 
+/**
+ * 压缩章节路径，使元数据前缀落在预留 Token 预算内。
+ *
+ * @param path 目标文件路径或节点层级路径。
+ * @param budget 本次处理允许使用的 Token 或调用预算。
+ * @returns 整理后的文本或标识。
+ */
 function compactHeadingPath(path: string[], budget: number): string {
   const selected: string[] = [];
   //把路径反转，从最深层标题开始遍历。这样即使路径很长，也能优先保留最近的上下文
@@ -321,6 +365,14 @@ function compactHeadingPath(path: string[], budget: number): string {
   return selected.join(" > ");
 }
 
+/**
+ * 按实际 Token 数截断文本，使其满足指定预算。
+ *
+ * @param text 待处理的文本。
+ * @param budget 本次处理允许使用的 Token 或调用预算。
+ * @param countTokens 计算文本 Token 数的分词回调。
+ * @returns 整理后的文本或标识。
+ */
 function truncateToTokenBudget(text: string, budget: number, countTokens = estimateTokens): string {
   if (budget <= 0) return "";
   if (countTokens(text) <= budget) return text;
@@ -340,6 +392,8 @@ function truncateToTokenBudget(text: string, budget: number, countTokens = estim
 }
 
 /**
+ * 判断当前块是否是一个新的章节。
+ *
  * @param buffer 块缓冲区
  * @param nextHeading 下一个Block
  *
@@ -348,6 +402,8 @@ function truncateToTokenBudget(text: string, budget: number, countTokens = estim
  * 如果前一个块有内容，则返回 false。
  *
  * 如果前一个块没有内容，则判断当前块的标题路径是否是前一个块的标题路径的前缀。
+ *
+ * @returns 条件是否满足的判断结果。
  */
 function startsNewSection(buffer: Block[], nextHeading: Block): boolean {
   if (!buffer.length) return false;
@@ -358,6 +414,10 @@ function startsNewSection(buffer: Block[], nextHeading: Block): boolean {
 
 /**
  * 判断路径是否是另一个路径的前缀。
+ *
+ * @param prefix 需要匹配或补入的前缀。
+ * @param path 目标文件路径或节点层级路径。
+ * @returns 条件是否满足的判断结果。
  */
 function isPathPrefix(prefix: string[], path: string[]): boolean {
   return (
@@ -369,11 +429,16 @@ function isPathPrefix(prefix: string[], path: string[]): boolean {
 }
 
 /**
+ * 从缓冲块生成索引分块，记录内容、章节、原文偏移与稳定标识。
+ *
  * @description 块缓冲区转为 chunk
  * @param docId 文档ID
  * @param title 文档标题
  * @param blocks 块缓冲区
  * @param index chunk索引
+ *
+ * @param markdown 待解析或写入的 Markdown 原文。
+ * @returns 带原文偏移与章节信息的索引分块。
  */
 function buildChunk(
   docId: string,
@@ -417,6 +482,15 @@ function buildChunk(
   };
 }
 
+/**
+ * 判断新块与当前缓冲合并后是否超过完整 passage 预算。
+ *
+ * @param title 文档或界面标题。
+ * @param blocks 需要合并或切分的内容块集合。
+ * @param next 准备写入的下一状态。
+ * @param maxTokens 本次允许使用的最大 Token 数。
+ * @returns 条件是否满足的判断结果。
+ */
 function exceedsPassageBudget(
   title: string,
   blocks: Block[],
@@ -437,6 +511,12 @@ function exceedsPassageBudget(
 /**
  * 计算当前标题路径下内容可用的 token 预算（总预算减去前缀开销）
  * 然后如果单个块超大就拆分
+ *
+ * @param title 文档或界面标题。
+ * @param headingPath 当前块所属的标题层级路径。
+ * @param maxTokens 本次允许使用的最大 Token 数。
+ * @param countTokens 计算文本 Token 数的分词回调。
+ * @returns 计算得到的数值。
  */
 function contentTokenBudget(
   title: string,
@@ -454,6 +534,10 @@ function contentTokenBudget(
 /**
  * 把一个超过 token 预算的 Block 拆成多个不超过预算的小 Block
  * 同时尽量保持语义/结构完整
+ *
+ * @param block 当前 Markdown 或编辑器内容块。
+ * @param budget 本次处理允许使用的 Token 或调用预算。
+ * @returns 整理后的结果列表。
  */
 function splitOversizedBlock(block: Block, budget: number): Block[] {
   //如果块本身不超限，直接返回。
@@ -488,6 +572,16 @@ function splitOversizedBlock(block: Block, budget: number): Block[] {
   return packRanges(block, units, budget);
 }
 
+/**
+ * 沿可切分范围装配文本块，避免突破内容预算。
+ *
+ * @param block 当前 Markdown 或编辑器内容块。
+ * @param units units 参数（Array<[number, number]>）。
+ * @param budget 本次处理允许使用的 Token 或调用预算。
+ * @param decorate 为切分后的内容补充结构上下文的回调。
+ * @param oversized 超过当前预算的内容块。
+ * @returns 整理后的结果列表。
+ */
 function packRanges(
   block: Block,
   units: Array<[number, number]>,
@@ -501,6 +595,9 @@ function packRanges(
   let pendingEnd = 0;
 
   //把当前 pending 区间从原 block 中切出来，生成一个新 Block 加入 parts，然后重置 pending
+  /**
+   * 把当前 pending 区间从原 block 中切出来，生成一个新 Block 加入 parts，然后重置 pending
+   */
   const flushPending = () => {
     if (pendingStart === null) return;
     parts.push(decorate(sliceBlock(block, pendingStart, pendingEnd)));
@@ -532,6 +629,14 @@ function packRanges(
   return parts;
 }
 
+/**
+ * 从父块构造子块，同时保留章节上下文与原文位置。
+ *
+ * @param block 当前 Markdown 或编辑器内容块。
+ * @param node 当前语法树或编辑器节点。
+ * @param context 当前操作的上下文。
+ * @returns Block 类型的处理结果。
+ */
 function childBlock(block: Block, node: MarkdownNode, context = block.context): Block {
   const start = node.position?.start.offset;
   const end = node.position?.end.offset;
@@ -540,16 +645,36 @@ function childBlock(block: Block, node: MarkdownNode, context = block.context): 
     startOffset: start, endOffset: end, context, intro: undefined, retrievalText: undefined };
 }
 
+/**
+ * 读取子节点相对当前块的原文范围。
+ *
+ * @param block 当前 Markdown 或编辑器内容块。
+ * @param nodes 待遍历或渲染的节点集合。
+ * @returns 整理后的结果列表。
+ */
 function nodeRanges(block: Block, nodes: MarkdownNode[]): Array<[number, number]> {
   return nodes.map((node) => [node.position!.start.offset! - block.startOffset,
     node.position!.end.offset! - block.startOffset]);
 }
 
+/**
+ * 按表格行拆分超长表格，并为各部分保留表头上下文。
+ *
+ * @param block 当前 Markdown 或编辑器内容块。
+ * @param budget 本次处理允许使用的 Token 或调用预算。
+ * @returns 整理后的结果列表。
+ */
 function splitTable(block: Block, budget: number): Block[] {
   const rows = block.node.children ?? [];
   const data = rows.slice(1);
   if (!data.length) throw new UnsplittableMarkdownError("Table header exceeds the chunk budget");
   const header = block.text.slice(0, data[0]!.position!.start.offset! - block.startOffset).trimEnd();
+  /**
+   * 给切出的片段补上表头或代码围栏等检索上下文，保留原文偏移不变。
+   *
+   * @param part 切分后的内容片段。
+   * @returns Block 类型的处理结果。
+   */
   const decorate = (part: Block): Block => ({ ...part, retrievalText:
     part.startOffset === block.startOffset ? part.text : `${header}\n${part.text}` });
   const ranges = nodeRanges(block, data);
@@ -569,6 +694,13 @@ function splitTable(block: Block, budget: number): Block[] {
   });
 }
 
+/**
+ * 沿列表项边界拆分内容，保留需要的列表上下文。
+ *
+ * @param block 当前 Markdown 或编辑器内容块。
+ * @param budget 本次处理允许使用的 Token 或调用预算。
+ * @returns 整理后的结果列表。
+ */
 function splitList(block: Block, budget: number): Block[] {
   const items = block.node.children ?? [];
   return packRanges(block, nodeRanges(block, items), budget, (part) => part, (start, end) => {
@@ -582,6 +714,13 @@ function splitList(block: Block, budget: number): Block[] {
   });
 }
 
+/**
+ * 沿安全代码边界拆分代码块，并保留代码围栏。
+ *
+ * @param block 当前 Markdown 或编辑器内容块。
+ * @param budget 本次处理允许使用的 Token 或调用预算。
+ * @returns 整理后的结果列表。
+ */
 function splitCode(block: Block, budget: number): Block[] {
   const language = block.node.lang ?? "";
   if (["mermaid", "plantuml", "dot", "graphviz"].includes(language.toLowerCase())) {
@@ -595,6 +734,14 @@ function splitCode(block: Block, budget: number): Block[] {
   const runs = [...body.matchAll(/`+/gu)].map((match) => match[0].length);
   const fence = "`".repeat(Math.max(3, ...runs.map((length) => length + 1)));
   const info = [language, block.node.meta ?? ""].filter(Boolean).join(" ");
+  /**
+   * 给切出的片段补上表头或代码围栏等检索上下文，保留原文偏移不变。
+   *
+   * @param start 区间起始位置。
+   * @param end 区间结束位置。
+   * @param owner 当前记录的所属用户或用户空间键（可选）。
+   * @returns Block 类型的处理结果。
+   */
   const decorate = (start: number, end: number, owner?: string): Block => {
     const part = sliceBlock(block, bodyStart + start, bodyStart + end);
     const label = owner ? `；所属函数：${truncateToTokenBudget(owner, 24)}` : "";
@@ -611,6 +758,12 @@ function splitCode(block: Block, budget: number): Block[] {
   return ranges.map(({ start, end, owner }) => decorate(start, end, owner));
 }
 
+/**
+ * 组合块正文与补充上下文，生成用于检索的块文本。
+ *
+ * @param block 当前 Markdown 或编辑器内容块。
+ * @returns 整理后的文本或标识。
+ */
 function renderBlock(block: Block): string {
   const references = new Set<string>();
   walkMarkdown(block.node, (node) => {
@@ -625,6 +778,12 @@ function renderBlock(block: Block): string {
   return [...block.context, block.retrievalText ?? block.text, ...references].filter(Boolean).join("\n\n");
 }
 
+/**
+ * 判断当前块是否属于不宜按普通段落拆分的图片内容。
+ *
+ * @param block 当前 Markdown 或编辑器内容块。
+ * @returns 条件是否满足的判断结果。
+ */
 function isImageBlock(block: Block): boolean {
   return block.node.type === "paragraph" && Boolean(block.node.children?.some((node) =>
     node.type === "image" || node.type === "imageReference")) &&
@@ -632,6 +791,15 @@ function isImageBlock(block: Block): boolean {
       (node.type === "text" && !node.value?.trim()));
 }
 
+/**
+ * 对无法直接装入预算的块应用更细粒度拆分。
+ *
+ * @param block 当前 Markdown 或编辑器内容块。
+ * @param start 区间起始位置。
+ * @param end 区间结束位置。
+ * @param budget 本次处理允许使用的 Token 或调用预算。
+ * @returns 整理后的结果列表。
+ */
 function hardSplitBlock(
   block: Block,
   start: number,
@@ -667,6 +835,14 @@ function hardSplitBlock(
   return parts;
 }
 
+/**
+ * 按字符区间截取块，同时修正其原文偏移。
+ *
+ * @param block 当前 Markdown 或编辑器内容块。
+ * @param start 区间起始位置。
+ * @param end 区间结束位置。
+ * @returns Block 类型的处理结果。
+ */
 function sliceBlock(block: Block, start: number, end: number): Block {
   return {
     ...block,
@@ -681,6 +857,11 @@ function sliceBlock(block: Block, start: number, end: number): Block {
  *  @params blocks 上一个 chunk 的所有 block
  *  @params nextHeadingPath 下一个 chunk 所在章节的 headingPath
  *  @params overlapTokens 最多允许重叠多少 token
+ *
+ * @param blocks 需要合并或切分的内容块集合。
+ * @param nextHeadingPath 下一个内容块所属的标题路径。
+ * @param overlapTokens overlapTokens 对应的 Token 数量或预算。
+ * @returns 整理后的结果列表。
  */
 function takeOverlap(
   blocks: Block[],
@@ -715,6 +896,13 @@ function takeOverlap(
   return result.reverse();
 }
 
+/**
+ * 提取块末尾的内容，用于构造相邻分块重叠区。
+ *
+ * @param block 当前 Markdown 或编辑器内容块。
+ * @param budget 本次处理允许使用的 Token 或调用预算。
+ * @returns Block 类型的处理结果；未找到或不可用时可能为空。
+ */
 function tailBlock(block: Block, budget: number): Block | undefined {
   let tail: Block | undefined;
   for (const [start] of sentenceRanges(block.text, protectedRanges(block.node, block.startOffset)).reverse()) {
@@ -725,6 +913,15 @@ function tailBlock(block: Block, budget: number): Block | undefined {
   return tail;
 }
 
+/**
+ * 逐步缩减重叠上下文，为新块留出 Token 预算。
+ *
+ * @param title 文档或界面标题。
+ * @param overlap 相邻分块之间需要保留的重叠内容。
+ * @param next 准备写入的下一状态。
+ * @param maxTokens 本次允许使用的最大 Token 数。
+ * @returns 整理后的结果列表。
+ */
 function trimOverlapToFit(
   title: string,
   overlap: Block[],
@@ -741,6 +938,13 @@ function trimOverlapToFit(
   return result;
 }
 
+/**
+ * 比较两个标题路径是否指向同一章节。
+ *
+ * @param left 比较或计算中的左侧输入。
+ * @param right 比较或计算中的右侧输入。
+ * @returns 条件是否满足的判断结果。
+ */
 function samePath(left: string[], right: string[]): boolean {
   return (
     left.length === right.length &&
@@ -748,10 +952,22 @@ function samePath(left: string[], right: string[]): boolean {
   );
 }
 
+/**
+ * 按块边界连接检索文本，保留补充的结构上下文。
+ *
+ * @param blocks 需要合并或切分的内容块集合。
+ * @returns 整理后的文本或标识。
+ */
 function joinBlocks(blocks: Block[]): string {
   return joinBlocksRaw(blocks).trim();
 }
 
+/**
+ * 连接块的原始内容，供分块长度或位置计算使用。
+ *
+ * @param blocks 需要合并或切分的内容块集合。
+ * @returns 整理后的文本或标识。
+ */
 function joinBlocksRaw(blocks: Block[]): string {
   const nonEmpty = blocks.filter((block) => block.text.trim());
   return nonEmpty.reduce((result, block, index) => {
@@ -763,16 +979,33 @@ function joinBlocksRaw(blocks: Block[]): string {
   }, "");
 }
 
-/**  从 blocks 中找到最后一个非 heading 类型的 block，取其 headingPath。如果全是 heading，就取最后一个 block 的 headingPath。*/
+/**
+ *   从 blocks 中找到最后一个非 heading 类型的 block，取其 headingPath。如果全是 heading，就取最后一个 block 的 headingPath。
+ *
+ * @param blocks 需要合并或切分的内容块集合。
+ * @returns 整理后的字符串列表。
+ */
 function chunkHeadingPath(blocks: Block[]): string[] {
   const body = [...blocks].reverse().find((block) => block.type !== "heading");
   return [...((body ?? blocks.at(-1))?.headingPath ?? [])];
 }
 
+/**
+ * 判断块集合中是否含有可作为重叠区的正文。
+ *
+ * @param blocks 需要合并或切分的内容块集合。
+ * @returns 条件是否满足的判断结果。
+ */
 function hasBodyContent(blocks: Block[]): boolean {
   return blocks.some((block) => block.type !== "heading");
 }
 
+/**
+ * 估算文本 Token 数，供未传入模型分词器的路径使用。
+ *
+ * @param text 待处理的文本。
+ * @returns 计算得到的数值。
+ */
 export function estimateTokens(text: string): number {
   const cjk =
     text.match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/gu)?.length ?? 0;

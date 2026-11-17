@@ -1,3 +1,6 @@
+/**
+ * @file 知识文档接口。提供文档查询与修改入口，并协调资源、索引和演示数据。
+ */
 import {
   Body,
   Controller,
@@ -38,6 +41,20 @@ import { WorkspaceService } from '../workspace/workspace.service.js';
 
 @Controller()
 export class DocumentsController {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param documents 需要筛选或处理的文档集合。
+   * @param jobs 后台任务队列服务。
+   * @param store VectorStoreService 依赖实例。
+   * @param assets 当前文档关联的资源集合。
+   * @param memoryJobs DocumentMemoryJobsService 依赖实例。
+   * @param documentMemory DocumentMemoryService 依赖实例。
+   * @param conversationMemory ConversationMemoryService 依赖实例。
+   * @param articles ArticlesService 依赖实例。
+   * @param workspace WorkspaceService 依赖实例。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly documents: DocumentsService,
@@ -57,6 +74,14 @@ export class DocumentsController {
   // ③ index_now=true（默认）时调 jobs.enqueue 把任务推入 index_jobs 队列，去重 key 为 doc_id:version
   // ④ 调 markQueued 把文档 index_status 从 pending 改为 queued，并记录 latest_index_job_id
   // ⑤ 返回 202 Accepted 表示请求已受理，但向量索引尚未完成，前端应继续轮询状态变化
+  /**
+   * 根据输入创建知识文档并返回结果。
+   *
+   * @param request 当前业务请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param reply 用于写回 HTTP 或 SSE 数据的响应对象。
+   * @returns 时间对象列表；未找到或不可用时可能为空。
+   */
   @Post("documents")
   async create(
     @Body() request: DocumentCreateDto,
@@ -88,6 +113,13 @@ export class DocumentsController {
     return this.withAssets(await this.documents.require(record.doc_id));
   }
 
+  /**
+   * 按查询条件读取知识文档列表。
+   *
+   * @param query 用户问题或检索查询。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 当前页条目与符合条件的总数；未找到或不可用时可能为空。
+   */
   @Get("documents")
   async list(
     @Query() query: PaginationQueryDto,
@@ -117,6 +149,12 @@ export class DocumentsController {
     };
   }
 
+  /**
+   * 分页读取已发布且公开可见的文章。
+   *
+   * @param query 用户问题或检索查询。
+   * @returns 当前页条目与符合条件的总数。
+   */
   @Public()
   @Get("public/articles")
   async listPublicArticles(@Query() query: PaginationQueryDto) {
@@ -135,12 +173,25 @@ export class DocumentsController {
     };
   }
 
+  /**
+   * 读取指定文章的公开发布内容。
+   *
+   * @param docId 知识文档标识。
+   * @returns import("E:/LiveDoc/livedoc_server_nest/src/articles/article.types").PublicArticle 类型的处理结果。
+   */
   @Public()
   @Get("public/articles/:doc_id")
   async getPublicArticle(@Param("doc_id") docId: string) {
     return this.articles.publicRecord(await this.documents.getPublicArticle(docId));
   }
 
+  /**
+   * 按标识读取知识文档。
+   *
+   * @param docId 知识文档标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 时间对象列表；未找到或不可用时可能为空。
+   */
   @Get("documents/:doc_id")
   async get(
     @Param("doc_id") docId: string,
@@ -156,6 +207,14 @@ export class DocumentsController {
   // ③ 若 visibility 或 team_id 变化（即访问范围改变），需要 deactivateDocument 让旧索引立即失活，
   //    避免基于旧权限的向量数据被新权限的用户读到；其他字段变化不会主动重建索引
   // ④ 要重建索引必须由前端单独调 POST /documents/:doc_id/reindex
+  /**
+   * 根据请求更新知识文档。
+   *
+   * @param docId 知识文档标识。
+   * @param request 当前业务请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 时间对象列表；未找到或不可用时可能为空。
+   */
   @Patch("documents/:doc_id")
   async update(
     @Param("doc_id") docId: string,
@@ -178,6 +237,13 @@ export class DocumentsController {
     return this.withAssets(updated);
   }
 
+  /**
+   * 私有文档移入回收站；其他可写文档则清理任务、向量和资源后删除。
+   *
+   * @param docId 知识文档标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 整理后的状态与操作结果对象。
+   */
   @Delete("documents/:doc_id")
   async delete(
     @Param("doc_id") docId: string,
@@ -203,6 +269,13 @@ export class DocumentsController {
   //    实际仍走 activeFor 去重逻辑：同 doc 同 version 若已有活跃任务则直接返回旧任务
   // ③ markQueued 把 index_status 改为 queued，让前端轮询能反映"再次排队"状态
   // ④ @HttpCode 固定返回 202 Accepted，返回体是 jobResponse 而非文档对象，便于前端展示 job_id
+  /**
+   * 重建索引：手动触发对当前正文版本的异步索引任务
+   *
+   * @param docId 知识文档标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 时间对象；未找到或不可用时可能为空。
+   */
   @Post("documents/:doc_id/reindex")
   @HttpCode(HttpStatus.ACCEPTED)
   async reindex(
@@ -223,6 +296,12 @@ export class DocumentsController {
     return jobResponse(job);
   }
 
+  /**
+   * 写入本地演示使用的知识文档。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+   */
   @Post("dev/seed")
   @HttpCode(HttpStatus.OK)
   async seed(@CurrentAccess() context: AccessContext) {
@@ -309,6 +388,12 @@ export class DocumentsController {
     return { status: "seeded", documents: seeded };
   }
 
+  /**
+   * 为业务记录补充已关联的图片资源信息。
+   *
+   * @param record 待处理的业务记录。
+   * @returns 时间对象列表；未找到或不可用时可能为空。
+   */
   private async withAssets(
     record: Awaited<ReturnType<DocumentsService["require"]>>,
   ) {
@@ -343,6 +428,13 @@ export class DocumentsController {
   }
 }
 
+/**
+ * 判断演示文档内容或元数据是否已经变化。
+ *
+ * @param record 待处理的业务记录。
+ * @param document 当前知识文档记录。
+ * @returns 条件是否满足的判断结果。
+ */
 function demoDocumentChanged(
   record: Awaited<ReturnType<DocumentsService["require"]>>,
   document: (typeof DEMO_DOCUMENTS)[number],
@@ -358,6 +450,13 @@ function demoDocumentChanged(
   );
 }
 
+/**
+ * 合并正文与图片说明，构造实际用于知识检索的索引文本。
+ *
+ * @param content 待处理的正文内容。
+ * @param assets 当前文档关联的资源集合。
+ * @returns 整理后的文本或标识。
+ */
 function buildIndexContent(
   content: string,
   assets: Awaited<ReturnType<AssetsService["list"]>>,

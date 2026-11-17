@@ -1,3 +1,6 @@
+/**
+ * @file Agent 运行审计。记录任务生命周期、工具调用和用户反馈，为排障与效果统计提供依据。
+ */
 import {
   ConflictException,
   BadRequestException,
@@ -26,10 +29,26 @@ export class AgentAuditService {
   readonly runs = new Map<string, AgentRunRecord>();
   readonly calls = new Map<string, any>();
   private readonly activeRuns = new Set<string>();
+  /**
+   * 判断记录或任务是否仍处于有效运行状态。
+   *
+   * @param id 目标记录的唯一标识。
+   * @returns 条件是否满足的判断结果。
+   */
   isActive(id: string) {
     return this.activeRuns.has(id);
   }
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param db 共享数据库服务。
+   */
   constructor(private readonly db: DatabaseService) {}
+  /**
+   * 登记新的 Agent 运行，检查相同请求是否已经启动。
+   *
+   * @param run 当前 Agent 运行记录。
+   */
   async begin(run: AgentRunRecord) {
     run.created_at ??= new Date();
     if (
@@ -66,6 +85,11 @@ export class AgentAuditService {
     this.runs.set(run.run_id, run);
     this.activeRuns.add(run.run_id);
   }
+  /**
+   * 写回任务状态与交付信息，并兼容持久化图任务的反馈更新。
+   *
+   * @param run 当前 Agent 运行记录。
+   */
   async update(run: AgentRunRecord) {
     if (run.payload.workflow_version) {
       const result = await this.db.source.query(
@@ -107,6 +131,13 @@ export class AgentAuditService {
           console.error("Agent run audit unavailable", error);
         });
   }
+  /**
+   * 按用户与空间读取普通 Agent 运行，避免混用图任务记录。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param c 当前用户、空间与团队身份，用于权限校验。
+   * @returns AgentRunRecord 类型的处理结果。
+   */
   async get(id: string, c: AccessContext): Promise<AgentRunRecord> {
     let run = this.runs.get(id);
     if (run?.payload.workflow_version) run = undefined;
@@ -131,6 +162,13 @@ export class AgentAuditService {
       throw new NotFoundException("任务不存在");
     return run;
   }
+  /**
+   * 记录用户对本次回答的质量反馈。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param action 本次请求执行的操作类型。
+   */
   async recordAnswerFeedback(
     id: string,
     context: AccessContext,
@@ -144,6 +182,13 @@ export class AgentAuditService {
       );
     run.payload.feedback = { ...run.payload.feedback, answer: action };
   }
+  /**
+   * 更新回答对应的 Wiki 知识沉淀状态。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param state 当前业务或插件状态。
+   */
   async recordWikiCapture(
     id: string,
     context: AccessContext,
@@ -159,6 +204,17 @@ export class AgentAuditService {
       );
     run.payload.wiki_capture = state;
   }
+  /**
+   * 仅记录工具调用的标识、计数和状态，避免把原文或凭据写入审计。
+   *
+   * @param runId run 对应的唯一标识。
+   * @param callId call 对应的唯一标识。
+   * @param name 目标名称。
+   * @param source 当前来源内容或来源记录。
+   * @param status 本次需要记录或切换到的状态。
+   * @param payload 需要传递或持久化的业务数据。
+   * @param stepId step 对应的唯一标识（可选）。
+   */
   async tool(
     runId: string,
     callId: string,
@@ -197,6 +253,13 @@ export class AgentAuditService {
         console.error("Agent tool audit unavailable", error);
       }
   }
+  /**
+   * 校验运行归属后读取该任务的工具调用历史。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param c 当前用户、空间与团队身份，用于权限校验。
+   * @returns 整理后的结果列表。
+   */
   async list(id: string, c: AccessContext) {
     await this.get(id, c);
     if (this.db.metadataEnabled)
@@ -207,6 +270,13 @@ export class AgentAuditService {
     return [...this.calls.values()].filter((r) => r.run_id === id);
   }
 
+  /**
+   * 按统计窗口汇总当前用户的任务质量、用量和耗时。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param window 统计时间窗口。
+   * @returns 时间对象列表；未找到或不可用时可能为空。
+   */
   async metrics(context: AccessContext, window = '24h') {
     let hours: number;
     try { hours = windowHours(window); }

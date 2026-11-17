@@ -1,3 +1,6 @@
+/**
+ * @file 索引 Worker 入口。启动独立索引消费循环，并在退出信号到达时释放应用资源。
+ */
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { hostname } from 'node:os';
@@ -15,6 +18,9 @@ const memoryWorker = app.get(DocumentMemoryWorkerService);
 // workerId 由主机名 + 进程 ID 组成，唯一标识这个 Worker 实例。
 const workerId = `${hostname()}-${process.pid}`;
 let closing = false;
+/**
+ * 收到退出信号时停止领取新索引任务，让循环进入收尾。
+ */
 const stop = () => {
   closing = true;
 };

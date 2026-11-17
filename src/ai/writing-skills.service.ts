@@ -1,3 +1,6 @@
+/**
+ * @file 写作技能。管理技能定义，校验步骤与输入，并转换为任务可执行计划。
+ */
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Ajv } from 'ajv';
@@ -99,7 +102,19 @@ export const BUILTIN_WRITING_SKILLS: readonly WritingSkill[] = [
   },
 ];
 
+/**
+ * 根据用户与空间生成隔离存储使用的键。
+ *
+ * @param context 当前用户、空间与团队身份，用于权限校验。
+ * @returns 整理后的文本或标识。
+ */
 const scopeKey = (context: AccessContext) => JSON.stringify([context.space_id, context.user_id]);
+/**
+ * 解析持久化的写作技能定义。
+ *
+ * @param value 待校验或转换的值。
+ * @returns WritingSkillDefinition 类型的处理结果。
+ */
 const parseDefinition = (value: unknown) => (typeof value === 'string' ? JSON.parse(value) : value) as WritingSkillDefinition;
 
 @Injectable()
@@ -108,19 +123,46 @@ export class WritingSkillsService {
   private readonly validateInput = new Ajv({ strict: false }).compile(inputSchema);
   private readonly toolNames = new Set([...DOCUMENT_AGENT_TOOLS, ...PERSONAL_WEB_TOOLS].map((tool) => tool.function.name));
 
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param database 共享数据库服务。
+   * @param workspace WorkspaceService 依赖实例。
+   */
   constructor(private readonly database: DatabaseService, private readonly workspace: WorkspaceService) {}
 
+  /**
+   * 按查询条件读取写作技能列表。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 整理后的结果列表。
+   */
   async list(context: AccessContext): Promise<SkillMetadata[]> {
     return (await this.all(context)).map(({ skill_id, revision, builtin, name, description, parameters, enabled }) =>
       ({ skill_id, revision, builtin, name, description, parameters: structuredClone(parameters), enabled }));
   }
 
+  /**
+   * 按标识读取写作技能。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param id 目标记录的唯一标识。
+   * @returns WritingSkill 类型的处理结果。
+   */
   async get(context: AccessContext, id: string): Promise<WritingSkill> {
     const skill = (await this.all(context)).find((item) => item.skill_id === id);
     if (!skill) throw new NotFoundException('写作 Skill 不存在');
     return structuredClone(skill);
   }
 
+  /**
+   * 校验技能定义与修订号后保存个人技能，内置技能保持只读。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param input 本次操作的输入数据。
+   * @param id 目标记录的唯一标识（可选）。
+   * @returns WritingSkill 类型的处理结果。
+   */
   async save(context: AccessContext, input: SaveWritingSkillInput, id?: string): Promise<WritingSkill> {
     if (id?.startsWith('builtin-')) throw new ForbiddenException('内置 Skill 只读，请复制为个人版本');
     if (!this.validateInput(input)) throw new BadRequestException('写作 Skill 定义无效');
@@ -152,6 +194,13 @@ export class WritingSkillsService {
     return structuredClone(skill);
   }
 
+  /**
+   * 校验个人技能的修订版本后删除定义。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param id 目标记录的唯一标识。
+   * @param expectedRevision 调用方期望操作的状态修订号。
+   */
   async delete(context: AccessContext, id: string, expectedRevision: number): Promise<void> {
     if (id.startsWith('builtin-')) throw new ForbiddenException('内置 Skill 只读');
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new BadRequestException('需要有效的 Skill 版本');
@@ -169,6 +218,13 @@ export class WritingSkillsService {
     }
   }
 
+  /**
+   * 检查技能版本、启用状态与参数，生成当前任务固定使用的技能快照。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param selection 当前选区的范围与文本信息。
+   * @returns 固定版本的写作技能快照。
+   */
   async snapshot(context: AccessContext, selection: SkillSelection): Promise<WritingSkillSnapshot> {
     const skill = await this.get(context, selection.skill_id);
     if (selection.skill_revision !== undefined && selection.skill_revision !== skill.revision)
@@ -187,13 +243,31 @@ export class WritingSkillsService {
     return structuredClone({ skill, inputs, ...(template ? { template } : {}) });
   }
 
+  /**
+   * 根据技能步骤及用户输入生成可执行计划。
+   *
+   * @param snapshot 任务开始时保存的文档或配置快照。
+   * @param query 用户问题或检索查询。
+   * @returns 可执行的任务计划。
+   */
   toPlan(snapshot: WritingSkillSnapshot, query: string): ExecutionPlan {
+    /**
+     * 用用户输入替换技能定义中的参数占位符。
+     *
+     * @param text 待处理的文本。
+     * @returns 整理后的文本或标识。
+     */
     const fill = (text: string) => text.replace(/\{\{([a-z][a-z0-9_]*)\}\}/gu,
       (_match, key: string) => snapshot.inputs[key]?.trim() || '用户指定要求');
     return validatePlan({ goal: query, outline: [], constraints: [...snapshot.skill.acceptance],
       steps: snapshot.skill.steps.map((step) => ({ ...structuredClone(step), description: fill(step.description) })) });
   }
 
+  /**
+   * 检查技能参数、步骤依赖与验收要求是否合法。
+   *
+   * @param definition 写作技能或模板的完整定义。
+   */
   private validateDefinition(definition: WritingSkillDefinition) {
     if (![definition.name, definition.description, ...definition.acceptance].every((text) => text.trim()))
       throw new BadRequestException('Skill 名称、描述与验收要求不能为空');
@@ -209,6 +283,12 @@ export class WritingSkillsService {
     }
   }
 
+  /**
+   * 汇总内置定义与当前用户保存的自定义定义。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 整理后的结果列表。
+   */
   private async all(context: AccessContext): Promise<WritingSkill[]> {
     const personal = this.database.metadataEnabled
       ? (await this.database.query<{ skill_id: string; revision: number; definition: unknown }>(

@@ -1,3 +1,6 @@
+/**
+ * @file 工作空间表结构。声明分类、回收站和写作模板所需的数据表。
+ */
 export const WORKSPACE_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS agent_user_settings(space_id VARCHAR(128) NOT NULL,user_id VARCHAR(128) NOT NULL,revision INT NOT NULL DEFAULT 0,payload JSON NOT NULL,updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),PRIMARY KEY(space_id,user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
   `CREATE TABLE IF NOT EXISTS note_category_trees(space_id VARCHAR(128) NOT NULL,owner_id VARCHAR(128) NOT NULL,tree_revision INT NOT NULL DEFAULT 0,PRIMARY KEY(space_id,owner_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,

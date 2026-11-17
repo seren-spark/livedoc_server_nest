@@ -1,3 +1,6 @@
+/**
+ * @file 写作技能表结构。声明用户写作技能定义所需的数据库结构。
+ */
 export const WRITING_SKILLS_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS writing_skills (
     skill_id VARCHAR(128) PRIMARY KEY,

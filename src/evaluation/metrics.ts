@@ -1,3 +1,6 @@
+/**
+ * @file RAG 评测指标。计算检索命中、回答依据和用户采纳率等基础指标。
+ */
 export interface RetrievalCaseResult {
   expected_chunk_ids: string[];
   retrieved_chunk_ids: string[];
@@ -11,6 +14,12 @@ export interface RetrievalMetrics {
   permission_leak_rate: number;
 }
 
+/**
+ * 比较检索命中与标注来源，计算检索质量指标。
+ *
+ * @param results 已经完成的步骤或评测结果。
+ * @returns RetrievalMetrics 类型的处理结果。
+ */
 export function calculateRetrievalMetrics(results: RetrievalCaseResult[]): RetrievalMetrics {
   if (!results.length) {
     return { recall_at_k: 0, mean_reciprocal_rank: 0, precision_at_k: 0, permission_leak_rate: 0 };
@@ -39,6 +48,13 @@ export function calculateRetrievalMetrics(results: RetrievalCaseResult[]): Retri
   };
 }
 
+/**
+ * 检查回答是否引用有效证据，并计算有据回答的得分。
+ *
+ * @param answer 本轮生成的回答文本。
+ * @param citationCount 本次使用的引用证据数量。
+ * @returns 整理后的状态与操作结果对象。
+ */
 export function gradeGroundedAnswer(answer: string, citationCount: number): {
   grounded: boolean;
   has_citation: boolean;
@@ -48,10 +64,23 @@ export function gradeGroundedAnswer(answer: string, citationCount: number): {
   return { grounded: refused || (citationCount > 0 && cited), has_citation: cited };
 }
 
+/**
+ * 根据反馈次数计算用户采纳率。
+ *
+ * @param completedEvidenceAnswers completedEvidenceAnswers 参数（number）。
+ * @param insertedAnswers insertedAnswers 参数（number）。
+ * @returns 计算得到的数值。
+ */
 export function adoptionRate(completedEvidenceAnswers: number, insertedAnswers: number): number {
   return round(completedEvidenceAnswers ? insertedAnswers / completedEvidenceAnswers : 0);
 }
 
+/**
+ * 按指定位数四舍五入，统一指标展示精度。
+ *
+ * @param value 待校验或转换的值。
+ * @returns 计算得到的数值。
+ */
 function round(value: number): number {
   return Math.round(value * 10_000) / 10_000;
 }

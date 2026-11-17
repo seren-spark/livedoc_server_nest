@@ -1,3 +1,6 @@
+/**
+ * @file 文档长期记忆。合并和筛选有证据支持的文档记忆，生成写作上下文。
+ */
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { getEncoding, type Tiktoken } from 'js-tiktoken';
@@ -22,6 +25,12 @@ export class DocumentMemoryService {
   private readonly tokenizer: Tiktoken;
   private readonly repository: DocumentMemoryRepository;
 
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param database 共享数据库服务。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly database: DatabaseService,
@@ -32,11 +41,23 @@ export class DocumentMemoryService {
     );
   }
 
+  /**
+   * 按标识读取文档记忆。
+   *
+   * @param docId 知识文档标识。
+   * @returns 文档记忆档案；未找到或不可用时可能为空。
+   */
   async get(docId: string): Promise<DocumentMemoryProfile | null> {
     if (!this.database.memoryEnabled) return this.profiles.get(docId) ?? null;
     return this.repository.findByDocumentId(docId);
   }
 
+  /**
+   * 将当前记录标记为等待后台处理。
+   *
+   * @param document 当前知识文档记录。
+   * @returns 文档记忆档案。
+   */
   async markPending(document: DocumentRecord): Promise<DocumentMemoryProfile> {
     const current = await this.get(document.doc_id);
     const profile = current
@@ -48,11 +69,19 @@ export class DocumentMemoryService {
 
   /**
    * 标记文档为正在提取中
+   *
+   * @param docId 知识文档标识。
    */
   async markExtracting(docId: string): Promise<void> {
     await this.patchStatus(docId, 'extracting', null);
   }
 
+  /**
+   * 保存后台处理失败状态及错误原因。
+   *
+   * @param docId 知识文档标识。
+   * @param error 本次操作捕获的异常。
+   */
   async markFailed(docId: string, error: string): Promise<void> {
     await this.patchStatus(docId, 'failed', error.slice(0, 2000));
   }
@@ -65,6 +94,8 @@ export class DocumentMemoryService {
    * @param currentHashes 当前所有 chunk hash
    * @param fullExtraction 是否全量提取
    * @returns 更新后的文档记忆配置
+   *
+   * @param options 当前知识文档记录。
    */
   async applyExtraction(options: {
     document: DocumentRecord;
@@ -81,6 +112,12 @@ export class DocumentMemoryService {
     const retainedStyles = retainItems(previous.style_tags, options.fullExtraction, currentHashSet);
     const retainedSettings = retainItems(previous.global_settings, options.fullExtraction, currentHashSet);
     //只保留置信度 ≥ 配置阈值的项
+    /**
+     * 只保留置信度 ≥ 配置阈值的项
+     *
+     * @param item 本次正在处理的条目。
+     * @returns 条件是否满足的判断结果。
+     */
     const isConfident = (item: { confidence: number }) =>
       validConfidence(item.confidence, this.config.documentMemoryMinConfidence);
     //新抽到的术语表先按置信度过滤
@@ -126,6 +163,14 @@ export class DocumentMemoryService {
     return next;
   }
 
+  /**
+   * 把有效记忆整理为写作提示词中的上下文。
+   *
+   * @param docId 知识文档标识。
+   * @param documentVersion documentVersion 参数（number | undefined）。
+   * @param query 用户问题或检索查询。
+   * @returns 整理后的文本或标识。
+   */
   async promptText(
     docId: string | undefined,
     documentVersion: number | undefined,
@@ -156,12 +201,24 @@ export class DocumentMemoryService {
     return result.join('\n');
   }
 
+  /**
+   * 删除指定文档对应的数据及关联记录。
+   *
+   * @param docId 知识文档标识。
+   */
   async deleteDocument(docId: string): Promise<void> {
     if (this.database.memoryEnabled) {
       await this.repository.delete(docId);
     } else this.profiles.delete(docId);
   }
 
+  /**
+   * 仅更新记忆档案的状态及相关版本信息。
+   *
+   * @param docId 知识文档标识。
+   * @param status 本次需要记录或切换到的状态。
+   * @param lastError 最近一次执行失败的异常。
+   */
   private async patchStatus(
     docId: string,
     status: DocumentMemoryProfile['status'],
@@ -172,6 +229,11 @@ export class DocumentMemoryService {
     await this.persist({ ...current, status, last_error: lastError, updated_at: new Date() });
   }
 
+  /**
+   * 将当前记忆档案写入启用的存储路径。
+   *
+   * @param profile 模型配置或文档记忆档案。
+   */
   private async persist(profile: DocumentMemoryProfile): Promise<void> {
     if (!this.database.memoryEnabled) {
       this.profiles.set(profile.doc_id, profile);
@@ -181,6 +243,13 @@ export class DocumentMemoryService {
   }
 }
 
+/**
+ * 创建尚未提取记忆时的初始文档档案。
+ *
+ * @param document 当前知识文档记录。
+ * @param status 本次需要记录或切换到的状态。
+ * @returns 文档记忆档案。
+ */
 function emptyProfile(document: DocumentRecord, status: DocumentMemoryProfile['status']): DocumentMemoryProfile {
   const now = new Date();
   return {
@@ -190,6 +259,15 @@ function emptyProfile(document: DocumentRecord, status: DocumentMemoryProfile['s
   };
 }
 
+/**
+ * 合并已有记忆与新提取项，保留有效来源和稳定标识。
+ *
+ * @param retained 筛选后需要保留的条目。
+ * @param incoming incoming 参数（T[]）。
+ * @param key 查询或存储使用的键。
+ * @param limit 本次读取或处理的数量上限。
+ * @returns 整理后的结果列表。
+ */
 function mergeItems<T extends { confidence: number }>(
   retained: T[], incoming: T[], key: (item: T) => string, limit: number,
 ): T[] {
@@ -206,6 +284,14 @@ function mergeItems<T extends { confidence: number }>(
     .slice(0, limit);
 }
 
+/**
+ * 筛选仍有原文依据且满足数量限制的记忆项。
+ *
+ * @param items 需要处理的条目集合。
+ * @param fullExtraction 是否执行完整信息提取。
+ * @param currentHashes 当前内容各区域的摘要。
+ * @returns 整理后的结果列表。
+ */
 function retainItems<T extends { evidence: MemoryEvidence[] }>(
   items: T[],
   fullExtraction: boolean,
@@ -216,6 +302,15 @@ function retainItems<T extends { evidence: MemoryEvidence[] }>(
     : items.filter((item) => item.evidence.some((evidence) => currentHashes.has(evidence.hash)));
 }
 
+/**
+ * 从自动记忆项整理术语、风格及全局设定字段。
+ *
+ * @param type 当前数据或节点类型。
+ * @param value 待校验或转换的值。
+ * @param item 本次正在处理的条目。
+ * @param evidenceByHash 按内容摘要索引的原文证据。
+ * @returns 整理后的状态与操作结果对象。
+ */
 function autoFields(
   type: 'glossary' | 'style' | 'setting',
   value: string,
@@ -229,35 +324,90 @@ function autoFields(
   };
 }
 
+/**
+ * 为记忆项查找能够支持其内容的原文证据。
+ *
+ * @param hashes 用于匹配和去重的内容摘要集合。
+ * @param source 当前来源内容或来源记录。
+ * @returns 整理后的结果列表。
+ */
 function evidenceFor(hashes: string[] | undefined, source: ReadonlyMap<string, MemoryEvidence>): MemoryEvidence[] {
   return [...new Set(hashes ?? [])].map((hash) => source.get(hash)).filter((item): item is MemoryEvidence => Boolean(item)).slice(0, 3);
 }
 
+/**
+ * 根据记忆内容生成可跨次提取复用的稳定标识。
+ *
+ * @param type 当前数据或节点类型。
+ * @param value 待校验或转换的值。
+ * @returns 整理后的文本或标识。
+ */
 function stableItemId(type: string, value: string): string {
   return createHash('sha256').update(`${type}:${normalize(value)}`).digest('hex').slice(0, 32);
 }
 
+/**
+ * 组合记忆类型与规范化内容，生成记忆项的去重键。
+ *
+ * @param type 当前数据或节点类型。
+ * @param value 待校验或转换的值。
+ * @returns 整理后的文本或标识。
+ */
 function memoryKeyFor(type: string, value: string): string {
   return `${type}:${normalize(value)}`;
 }
 
+/**
+ * 将输入转换为比较和去重使用的规范形式。
+ *
+ * @param value 待校验或转换的值。
+ * @returns 整理后的文本或标识。
+ */
 function normalize(value: string): string {
   return value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
 }
 
+/**
+ * 清理记忆文本中的空白或无效内容。
+ *
+ * @param value 待校验或转换的值。
+ * @param max max 对应的数量或范围限制。
+ * @returns 整理后的文本或标识。
+ */
 function clean(value: unknown, max: number): string {
   return String(value ?? '').trim().replace(/\s+/gu, ' ').slice(0, max);
 }
 
+/**
+ * 清理字符串并去重，保留有效内容。
+ *
+ * @param values 待转换或去重的值集合。
+ * @param maxItems maxItems 对应的数量或范围限制。
+ * @param maxLength maxLength 对应的数量或范围限制。
+ * @returns 整理后的字符串列表。
+ */
 function uniqueStrings(values: unknown, maxItems: number, maxLength: number): string[] {
   if (!Array.isArray(values)) return [];
   return [...new Set(values.map((value) => clean(value, maxLength)).filter(Boolean))].slice(0, maxItems);
 }
 
+/**
+ * 将数值限制到给定边界内。
+ *
+ * @param value 待校验或转换的值。
+ * @returns 计算得到的数值。
+ */
 function clamp(value: number): number {
   return Math.max(0, Math.min(1, Number(value) || 0));
 }
 
+/**
+ * 验证置信度是否为允许范围内的有效数值。
+ *
+ * @param value 待校验或转换的值。
+ * @param minimum minimum 对应的数量或范围限制。
+ * @returns 条件是否满足的判断结果。
+ */
 function validConfidence(value: number, minimum: number): boolean {
   return Number.isFinite(Number(value)) && Number(value) >= minimum;
 }

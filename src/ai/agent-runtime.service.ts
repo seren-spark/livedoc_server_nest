@@ -1,3 +1,6 @@
+/**
+ * @file Agent 单步运行。执行模型与工具循环，管理上下文压缩、调用预算及 Worker 交付。
+ */
 import { BadRequestException, Injectable, Optional } from "@nestjs/common";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -52,6 +55,16 @@ import {
 export class AgentRuntimeService {
   private readonly ajv = new Ajv({ strict: false, allErrors: true });
   private readonly tokenizer;
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param llm 共享模型调用服务。
+   * @param tools 本次向模型开放的工具集合。
+   * @param workspace WorkspaceService 依赖实例。
+   * @param audit AgentAuditService 依赖实例。
+   * @param compressor ContextCompressorService 依赖实例（可选）。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly llm: LlmService,
@@ -64,6 +77,13 @@ export class AgentRuntimeService {
       config.tokenizerEncoding as Parameters<typeof getEncoding>[0],
     );
   }
+  /**
+   * 围绕任务目标筛选并压缩证据，生成预算内的资料预览。
+   *
+   * @param evidence 本次可用的引用标识与原文证据。
+   * @param goal 筛选资料或生成结果时需要满足的任务目标。
+   * @returns 整理后的结果列表。
+   */
   evidencePreview(evidence: Array<[string, string]>, goal: string): Array<[string, string]> {
     if (!this.compressor) throw new AgentExecutionError('CONTEXT_SERVICE_UNAVAILABLE', '资料上下文服务不可用', true);
     return selectTaskEvidence(evidence.map(([id, content]) => ({ citation: { id, title: id, kind: 'text' as const }, content })),
@@ -71,6 +91,16 @@ export class AgentRuntimeService {
       (text, query, budget) => this.compressor!.extractRelevant(text, query, budget), text => this.tokenizer.encode(text).length)
       .map(({ citation, content }) => [citation.id, content]);
   }
+  /**
+   * 核算上下文与调用预算，必要时压缩工具结果，再发起一次模型调用并累计用量。
+   *
+   * @param environment 当前 Worker 的身份、预算、能力与事件出口。
+   * @param messages 按对话顺序排列的模型消息。
+   * @param tools 本次向模型开放的工具集合。
+   * @param options 控制本次行为的可选配置。
+   * @param localUsage 当前 Worker 的局部模型用量统计（可选）。
+   * @returns 模型消息。
+   */
   async turn(
     environment: WorkerEnvironment,
     messages: AgentMessage[],
@@ -277,6 +307,12 @@ export class AgentRuntimeService {
     }
   }
 
+  /**
+   * 在独立任务上下文中运行指定角色的模型与工具循环。
+   *
+   * @param input 当前子任务的角色、目标、依赖与执行环境。
+   * @returns 子任务结果、用量与证据。
+   */
   async runWorker(input: WorkerInput): Promise<WorkerOutput> {
     const { step } = input;
     const environment: WorkerEnvironment = {
@@ -433,6 +469,12 @@ export class AgentRuntimeService {
         : input.role === "researcher"
           ? "当前角色 Researcher：在授权范围检索和读取，返回有依据的步骤摘要；缺少资料时明确说明。"
           : "";
+    /**
+     * 附加当前任务标识与角色后发送进度事件；取消后停止发送。
+     *
+     * @param event 需要处理的事件。
+     * @param data 当前事件或操作携带的数据。
+     */
     const enqueue = (event: string, data: Record<string, any>) => {
       if (!signal.aborted)
         environment.emit(event, {
@@ -441,6 +483,15 @@ export class AgentRuntimeService {
           agent_role: input.role,
         });
     };
+    /**
+     * 记录工具调用的参数摘要、结果状态和耗时。
+     *
+     * @param callId call 对应的唯一标识。
+     * @param name 目标名称。
+     * @param source 当前来源内容或来源记录。
+     * @param status 本次需要记录或切换到的状态。
+     * @param payload 需要传递或持久化的业务数据。
+     */
     const auditTool = (
       callId: string,
       name: string,

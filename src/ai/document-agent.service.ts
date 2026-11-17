@@ -1,3 +1,6 @@
+/**
+ * @file 文档 Agent 总入口。构建任务上下文，选择直接循环或计划执行，并校验与交付写作候选。
+ */
 import { ConversationConstraintsService, agentMemoryDocumentId, type ConstraintTurn } from './conversation-constraints.service.js';
 import { WritingSkillsService } from './writing-skills.service.js';
 import type { WritingSkillSnapshot } from './writing-skills.types.js';
@@ -74,6 +77,12 @@ type Route = {
   source: string;
   reason: string;
 };
+/**
+ * 截取计划目标、大纲和步骤说明，生成紧凑的计划摘要。
+ *
+ * @param plan 待校验或执行的任务计划。
+ * @returns 整理后的状态与操作结果对象。
+ */
 function planSummary(plan: ExecutionPlan) {
   return {
     goal: plan.goal.slice(0, 300),
@@ -85,6 +94,12 @@ function planSummary(plan: ExecutionPlan) {
     })),
   };
 }
+/**
+ * 先依据确认计划、任务模式和请求特征选择直接执行或计划执行。
+ *
+ * @param request 包含写作需求、编辑器快照和参考资料的 Agent 请求。
+ * @returns 规则命中的执行策略；未命中时返回 null，由后续分类判断。
+ */
 export function ruleRoute(request: DocumentAgentDto): Route | null {
   if (request.confirmed_plan)
     return {
@@ -128,6 +143,27 @@ export class DocumentAgentService {
   private readonly active = new Set<string>();
   private readonly admissions = new Map<string, number[]>();
   private readonly feedbackWrites = new Map<string, Promise<unknown>>();
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param llm 共享模型调用服务。
+   * @param documents 需要筛选或处理的文档集合。
+   * @param imports DocumentImportsService 依赖实例。
+   * @param articles ArticleRepository 依赖实例。
+   * @param workspace WorkspaceService 依赖实例。
+   * @param memory ConversationMemoryService 依赖实例。
+   * @param documentMemory DocumentMemoryService 依赖实例。
+   * @param mcp AgentMcpService 依赖实例。
+   * @param audit AgentAuditService 依赖实例。
+   * @param settings AgentSettingsService 依赖实例。
+   * @param runtime AgentRuntimeService 依赖实例。
+   * @param supervisor AgentSupervisorService 依赖实例。
+   * @param wiki WikiService 依赖实例。
+   * @param constraints ConversationConstraintsService 依赖实例（可选）。
+   * @param skills WritingSkillsService 依赖实例（可选）。
+   * @param preferences WritingPreferencesService 依赖实例（可选）。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly llm: LlmService,
@@ -148,6 +184,12 @@ export class DocumentAgentService {
     private readonly preferences?: WritingPreferencesService,
   ) {}
 
+  /**
+   * 返回前端需要的 Agent 功能开关与能力配置。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验（可选）。
+   * @returns 整理后的状态与操作结果对象。
+   */
   async capabilities(context?: AccessContext) {
     const personal = context ? await this.settings.runtime(context) : undefined;
     const deploymentWeb = personal?.deployment_web ?? true;
@@ -184,6 +226,14 @@ export class DocumentAgentService {
       },
     };
   }
+  /**
+   * 检查编辑目标、引用资料和当前用户身份是否匹配。
+   *
+   * @param request 包含写作需求、编辑器快照和参考资料的 Agent 请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param personal Awaited<ReturnType<AgentSettingsService["runtime"]>> 依赖实例（可选）。
+   * @param allowSnapshotVersionChange 是否允许恢复时接受快照版本变化。
+   */
   async validateIdentity(
     request: DocumentAgentDto,
     context: AccessContext,
@@ -250,6 +300,14 @@ export class DocumentAgentService {
     if (request.confirmed_plan)
       this.supervisor.assertPlanFits(request.confirmed_plan);
   }
+  /**
+   * 校验请求和能力，建立执行预算与审计记录，持续产出 Agent 事件及最终候选。
+   *
+   * @param request 包含写作需求、编辑器快照和参考资料的 Agent 请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param external 取消信号，用于中止请求和后台处理。
+   * @returns 按执行顺序逐步产出的进度事件或处理结果。
+   */
   async *run(
     request: DocumentAgentDto,
     context: AccessContext,
@@ -308,6 +366,13 @@ export class DocumentAgentService {
       },
     };
     let seq = 0;
+    /**
+     * 为任务事件附加运行标识和递增序号。
+     *
+     * @param event 需要处理的事件。
+     * @param data 当前事件或操作携带的数据。
+     * @returns Agent 进度或结果事件。
+     */
     const emit = (
       event: string,
       data: Record<string, any> = {},
@@ -318,11 +383,23 @@ export class DocumentAgentService {
     let eventSinkClosed = false;
     const events: AgentEvent[] = [];
     let wake: (() => void) | undefined;
+    /**
+     * 将后台进度写入当前请求的事件队列，并唤醒等待中的 SSE 生成器。
+     *
+     * @param event 需要处理的事件。
+     * @param data 当前事件或操作携带的数据。
+     */
     const enqueue = (event: string, data: Record<string, any>) => {
       if (eventSinkClosed || signal.aborted) return;
       events.push(emit(event, data));
       wake?.();
     };
+    /**
+     * 在异步工作执行期间持续输出队列事件，结束后传回结果或异常。
+     *
+     * @param work 需要在受控上下文中执行的异步操作。
+     * @returns 按执行顺序逐步产出的进度事件或处理结果。
+     */
     async function* progress<T>(
       work: Promise<T>,
     ): AsyncGenerator<AgentEvent, T> {
@@ -365,6 +442,14 @@ export class DocumentAgentService {
       traces: run.payload.traces,
       emit: enqueue,
     };
+    /**
+     * 通过共享 Runtime 发起模型调用，使上下文、取消与用量统计保持一致。
+     *
+     * @param messages 按对话顺序排列的模型消息。
+     * @param tools 本次向模型开放的工具集合。
+     * @param options 控制本次行为的可选配置。
+     * @returns 模型消息。
+     */
     const turn = (
       messages: AgentMessage[],
       tools: FunctionTool[],
@@ -376,11 +461,24 @@ export class DocumentAgentService {
     const coverageRegions = new Set<string>();
     let selectionRead = false;
     let candidateVersion = 0;
+    /**
+     * 整理文档快照、参考资料与写作约束，生成基础模型上下文。
+     *
+     * @returns 固定版本的写作技能快照列表；未找到或不可用时可能为空。
+     */
     const baseContext = () => this.buildContext(request, context, environment, `initial:${request.request_id}`);
     let base: any;
     const tasks: Record<string, WorkerOutput> = Object.create(null);
     const wikiProofs = new Map<string, WikiProof>();
     let wikiKnowledge: WikiKnowledgeSnapshot | null = null;
+    /**
+     * 执行当前任务的模型与工具循环，直到交付结果或触发停止条件。
+     *
+     * @param step 待校验或执行的任务计划（可选）。
+     * @param executionLimit 当前步骤允许使用的执行额度（可选）。
+     * @param stepTurnLimit 当前步骤允许进行的模型轮次数（可选）。
+     * @returns 经过整理的 Agent 候选结果。
+     */
     const loop = async (
       step?: ExecutionPlan["steps"][number],
       executionLimit?: number,
@@ -709,6 +807,13 @@ export class DocumentAgentService {
     }
   }
 
+  /**
+   * 在图任务恢复或继续前，复核所用来源的可见性与版本。
+   *
+   * @param citations 本次实际可用的引用证据集合。
+   * @param proofs 引用来源读取时保存的身份与版本证明。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   */
   async validateGraphSources(
     citations: AgentCitation[],
     proofs: WikiProof[],
@@ -718,6 +823,12 @@ export class DocumentAgentService {
     await this.validateCitationSources(citations, context);
   }
 
+  /**
+   * 检查候选引用的来源仍可访问且与读取时的版本一致。
+   *
+   * @param citations 本次实际可用的引用证据集合。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   */
   private async validateCitationSources(
     citations: Iterable<Pick<AgentCitation, "kind" | "import_id" | "doc_id" | "version" | "snapshot_hash">>,
     context: AccessContext,
@@ -747,6 +858,17 @@ export class DocumentAgentService {
     }
   }
 
+  /**
+   * 构建任务实际使用的文档、记忆、参考资料与能力上下文。
+   *
+   * @param request 包含写作需求、编辑器快照和参考资料的 Agent 请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param environment 当前 Worker 的身份、预算、能力与事件出口（可选）。
+   * @param inputId input 对应的唯一标识。
+   * @param userText 当前用户输入的原文。
+   * @param snapshots snapshots 参数（{ skill?: WritingSkillSnapshot; preferences?: PreferenceSnapshot; extractPreferences?: boo）。
+   * @returns 固定版本的写作技能快照列表；未找到或不可用时可能为空。
+   */
   async buildContext(request: DocumentAgentDto, context: AccessContext,
     environment?: WorkerEnvironment, inputId = `initial:${request.request_id}`, userText = request.query,
     snapshots: { skill?: WritingSkillSnapshot; preferences?: PreferenceSnapshot; extractPreferences?: boolean } = {}) {
@@ -822,22 +944,58 @@ export class DocumentAgentService {
     };
   }
 
+  /**
+   * 整理当前用户可选的写作技能目录。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 整理后的结果列表。
+   */
   async skillCatalog(context: AccessContext) {
     return this.skills ? (await this.skills.list(context)).filter((skill) => skill.enabled) : [];
   }
 
+  /**
+   * 读取并校验请求中选定的写作技能及输入。
+   *
+   * @param request 包含写作需求、编辑器快照和参考资料的 Agent 请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 固定版本的写作技能快照；未找到或不可用时可能为空。
+   */
   async selectedSkill(request: DocumentAgentDto, context: AccessContext) {
     return request.skill_id && this.skills ? this.skills.snapshot(context, { ...request, skill_id: request.skill_id }) : undefined;
   }
 
+  /**
+   * 将已选择的技能与输入转换为执行计划。
+   *
+   * @param snapshot 任务开始时保存的文档或配置快照。
+   * @param query 用户问题或检索查询。
+   * @returns 可执行的任务计划。
+   */
   skillPlan(snapshot: WritingSkillSnapshot, query: string) {
     if (!this.skills) throw new BadRequestException('写作 Skill 服务不可用');
     return this.skills.toPlan(snapshot, query);
   }
 
+  /**
+   * 根据当前用户输入更新会话约束，并写入本次任务上下文。
+   *
+   * @param request 包含写作需求、编辑器快照和参考资料的 Agent 请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param environment 当前 Worker 的身份、预算、能力与事件出口。
+   * @param inputId input 对应的唯一标识。
+   * @param userText 当前用户输入的原文。
+   * @returns 当前步骤的处理结果。
+   */
   async updateConstraints(request: DocumentAgentDto, context: AccessContext,
     environment: WorkerEnvironment, inputId: string, userText = request.query) {
     if (!this.constraints) throw new AgentExecutionError('MEMORY_UPDATE_FAILED', '约束记忆服务不可用');
+    /**
+     * 通过共享 Runtime 发起模型调用，使上下文、取消与用量统计保持一致。
+     *
+     * @param messages 按对话顺序排列的模型消息。
+     * @returns 模型消息。
+     */
     const turn: ConstraintTurn = (messages) => this.runtime.turn(environment, messages, [], {
       role: 'classifier', json: true, maxTokens: 1600, maxAttempts: 1,
       trace_name: 'conversation_constraints',
@@ -845,6 +1003,18 @@ export class DocumentAgentService {
     return this.constraints.prepare(request, context, inputId, turn, environment.signal, userText);
   }
 
+  /**
+   * 对高风险或复杂候选执行一次受限自检，保留可交付结果。
+   *
+   * @param candidate 当前待处理的 Agent 候选结果。
+   * @param environment 当前 Worker 的身份、预算、能力与事件出口。
+   * @param base 子任务继承的基础上下文。
+   * @param plan 待校验或执行的任务计划。
+   * @param citations 本次实际可用的引用证据集合。
+   * @param evidence 本次可用的引用标识与原文证据。
+   * @param run 当前 Agent 运行记录。
+   * @returns 经过整理的 Agent 候选结果。
+   */
   async reviewCandidate(
     candidate: AgentResult,
     environment: WorkerEnvironment,
@@ -855,6 +1025,14 @@ export class DocumentAgentService {
     run: AgentRunRecord,
   ) {
     const { request, signal } = environment;
+    /**
+     * 通过共享 Runtime 发起模型调用，使上下文、取消与用量统计保持一致。
+     *
+     * @param messages 按对话顺序排列的模型消息。
+     * @param tools 本次向模型开放的工具集合。
+     * @param options 控制本次行为的可选配置。
+     * @returns 模型消息。
+     */
     const turn = (
       messages: AgentMessage[],
       tools: FunctionTool[],
@@ -983,6 +1161,12 @@ export class DocumentAgentService {
     return { candidate, revised: wasRevised };
   }
 
+  /**
+   * 校验最终候选与来源后，整理引用并保存交付记录。
+   *
+   * @param args 当前用户、空间与团队身份，用于权限校验。
+   * @returns 按执行顺序逐步产出的进度事件或处理结果。
+   */
   async *finishCandidate(args: {
     candidate: AgentResult;
     candidateVersion: number;
@@ -1183,6 +1367,13 @@ export class DocumentAgentService {
       );
   }
 
+  /**
+   * 读取历史任务，校验当前编辑器身份并恢复可用候选。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns AgentRunRecord 类型的处理结果。
+   */
   private async recoverRun(id: string, context: AccessContext) {
     const run = await this.audit.get(id, context);
     if (run.payload.delivery) {
@@ -1245,6 +1436,13 @@ export class DocumentAgentService {
       return { ...run, status: "interrupted" };
     return run;
   }
+  /**
+   * 按当前用户与空间读取任务及候选记录。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 时间对象；未找到或不可用时可能为空。
+   */
   async getRun(id: string, context: AccessContext) {
     const run = await this.audit.get(id, context);
     const { delivery: _delivery, ...payload } = run.payload;
@@ -1264,6 +1462,14 @@ export class DocumentAgentService {
       status: interrupted ? "interrupted" : run.status,
     };
   }
+  /**
+   * 验证当前编辑器内容与原快照是否一致，再返回可恢复的候选。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param editorJson 当前编辑器文档的 JSON 内容。
+   * @returns AgentRunRecord 类型的处理结果。
+   */
   async restore(
     id: string,
     context: AccessContext,
@@ -1291,6 +1497,14 @@ export class DocumentAgentService {
     }
     return run;
   }
+  /**
+   * 按任务串行提交用户反馈，避免采纳与拒绝并发覆盖。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param input 本次操作的输入数据。
+   * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+   */
   async feedback(
     id: string,
     context: AccessContext,
@@ -1306,6 +1520,14 @@ export class DocumentAgentService {
       if (this.feedbackWrites.get(id) === work) this.feedbackWrites.delete(id);
     }
   }
+  /**
+   * 保存本次任务的用户反馈，并更新相关效果记录。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param input 本次操作的输入数据。
+   * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+   */
   private async recordFeedback(
     id: string,
     context: AccessContext,

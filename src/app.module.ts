@@ -1,3 +1,6 @@
+/**
+ * @file 应用根模块。组装配置、数据库、鉴权、文档、检索和 Agent 等后端模块。
+ */
 import { Module } from '@nestjs/common';
 import { AiModule } from './ai/ai.module.js';
 import { LlmModule } from './ai/llm.module.js';

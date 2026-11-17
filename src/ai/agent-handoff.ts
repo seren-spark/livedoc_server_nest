@@ -1,3 +1,6 @@
+/**
+ * @file Worker 交接。约束子任务的发现、缺口、冲突和证据交付格式。
+ */
 import { Ajv } from "ajv";
 import { BadRequestException } from "@nestjs/common";
 
@@ -30,7 +33,16 @@ export const workerHandoffSchema = {
 };
 const valid = new Ajv({ strict: false }).compile(workerHandoffSchema);
 
-/** Check structure and observed provenance; this does not prove semantic entailment. */
+/**
+ * 校验 Worker 交接结构及已观察到的来源关系，不把结构合法等同于事实成立。
+ *
+ *  Check structure and observed provenance; this does not prove semantic entailment.
+ *
+ * @param value 待校验或转换的值。
+ * @param citationIds citation 对应的标识集合。
+ * @param observations 工具执行后收集的观察结果。
+ * @returns WorkerHandoff 类型的处理结果。
+ */
 export function validateWorkerHandoff(value: unknown, citationIds: string[],
   observations: Array<{ citation_id: string; content: string }>): WorkerHandoff {
   if (!valid(value)) throw new BadRequestException("步骤交付结构无效，必须提供 findings、missing 和 conflicts");
@@ -47,6 +59,12 @@ export function validateWorkerHandoff(value: unknown, citationIds: string[],
     : handoff.missing.length ? handoff.findings.length ? "partial" : "insufficient" : "complete" };
 }
 
+/**
+ * 整理 Worker 交接校验所需的任务、输出和证据上下文。
+ *
+ * @param handoff Worker 交接的发现、缺口、冲突与证据。
+ * @returns 整理后的状态与操作结果对象。
+ */
 export function workerHandoffInput(handoff: WorkerHandoff | undefined) {
   if (!handoff) throw new BadRequestException("依赖任务缺少结构化交付");
   const { coverage: _coverage, ...value } = handoff;

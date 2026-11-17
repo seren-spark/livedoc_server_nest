@@ -1,3 +1,6 @@
+/**
+ * @file 公共业务协议。统一访问身份、引用证据、知识范围和检索追踪的数据结构。
+ */
 export type Visibility = 'private' | 'team' | 'public';
 export type SourceType =
   | 'article'

@@ -1,8 +1,21 @@
+/**
+ * @file Embedding 分块准备。使用模型实际分词预算检查文本块，生成向量化输入与块元数据。
+ */
 import { buildChunkPassage, chunkMarkdown } from './chunker.js';
 import type { AppConfig } from '../config/app-config.js';
 import type { EmbeddingService } from '../inference/embedding.service.js';
 
 // Used by production indexing and offline framework exports with identical token budgets.
+/**
+ * 用相同的模型 Token 预算准备分块，供正式索引和离线评测复用。
+ *
+ * @param docId 知识文档标识。
+ * @param title 文档或界面标题。
+ * @param content 待处理的正文内容。
+ * @param config 应用运行配置。
+ * @param embeddings Pick<EmbeddingService,'countTokens'> 依赖实例。
+ * @returns 可用于向量化的分块元数据及完整输入文本。
+ */
 export async function prepareEmbeddingChunks(docId: string, title: string, content: string,
   config: Pick<AppConfig, 'chunkMaxTokens' | 'chunkOverlapTokens'>, embeddings: Pick<EmbeddingService, 'countTokens'>) {
     let planningBudget = config.chunkMaxTokens;
@@ -19,7 +32,7 @@ export async function prepareEmbeddingChunks(docId: string, title: string, conte
        * passages = [
               "title: RAG 学习笔记\npath: RAG 学习笔记 > 检索 > Dense\nDense 负责语义召回，使用 BGE 模型生成向量。",
               "title: RAG 学习笔记\npath: RAG 学习笔记 > 检索 > Sparse\nSparse 负责词项匹配，擅长精确命中。"
-            ]       
+            ]
        */
       //把每个 chunk 拼成最终 passage：title: xxx\npath: xxx\n[正文]。
       const passages = chunks.map(buildChunkPassage);

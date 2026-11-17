@@ -1,3 +1,6 @@
+/**
+ * @file 写作意图与检索参数。识别写作请求的意图，准备检索范围、查询变体和置信度。
+ */
 import { Injectable, ServiceUnavailableException } from "@nestjs/common";
 import { validateAgentToolArguments, type AiWriteDto } from "../common/dto.js";
 import type { AgentToolCall, WriteIntent } from "../common/types.js";
@@ -43,11 +46,23 @@ export { AGENT_TOOL_DEFINITIONS as TOOL_DEFINITIONS };
 
 @Injectable()
 export class AgentToolsService {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param llm 共享模型调用服务。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly llm: LlmService,
   ) {}
 
+  /**
+   * 把工具调用或分类结果映射到写作业务意图。
+   *
+   * @param call 执行一次模型或工具调用的回调。
+   * @returns WriteIntent 类型的处理结果。
+   */
   intentFor(call: AgentToolCall): WriteIntent {
     return TOOL_TO_INTENT[call.name];
   }
@@ -152,6 +167,17 @@ export class AgentToolsService {
     );
   }
 
+  /**
+   * 用明确的请求规则构造工具调用，减少不必要的模型分类。
+   *
+   * @param request 当前业务请求。
+   * @param name 目标名称。
+   * @param source 当前来源内容或来源记录。
+   * @param reason 当前判断或失败的原因。
+   * @param confidence 当前分类或记忆项的置信度。
+   * @param started 当前操作的起始计时点。
+   * @returns AgentToolCall 类型的处理结果。
+   */
   private ruleCall(
     request: AiWriteDto,
     name: AgentToolName,
@@ -197,6 +223,13 @@ const KEYWORDS: Partial<Record<WriteIntent, string[]>> = {
   ],
 };
 
+/**
+ * 调用分类模型识别写作意图并整理检索参数。
+ *
+ * @param query 用户问题或检索查询。
+ * @param selectedText 当前选中的原文文本。
+ * @returns 整理后的状态与操作结果对象。
+ */
 export function classifyIntent(
   query: string,
   selectedText = "",
@@ -268,6 +301,15 @@ export function normalizeArguments(
   };
 }
 
+/**
+ * 去除空白与重复查询，保留可用于召回的查询变体。
+ *
+ * @param original 处理前保存的原始内容。
+ * @param candidates 待筛选的候选集合。
+ * @param enabled 是否启用当前功能。
+ * @param maxVariants maxVariants 对应的数量或范围限制。
+ * @returns 整理后的字符串列表。
+ */
 export function normalizeQueryVariants(
   original: string,
   candidates: unknown[],
@@ -296,6 +338,12 @@ export function normalizeQueryVariants(
   return result;
 }
 
+/**
+ * 提取查询中不应在改写时丢失的术语或代码标识。
+ *
+ * @param query 用户问题或检索查询。
+ * @returns 整理后的字符串列表。
+ */
 export function extractProtectedTerms(query: string): string[] {
   const values: string[] = [];
   const quoted =
@@ -310,10 +358,23 @@ export function extractProtectedTerms(query: string): string[] {
   return [...new Set(values)];
 }
 
+/**
+ * 计算当前操作已消耗的时间。
+ *
+ * @param started 当前操作的起始计时点。
+ * @returns 计算得到的数值。
+ */
 function elapsed(started: number): number {
   return Math.round((performance.now() - started) * 100) / 100;
 }
 
+/**
+ * 将分类置信度限制到合法数值范围。
+ *
+ * @param value 待校验或转换的值。
+ * @param fallback 首选路径不可用时采用的回退值。
+ * @returns 计算得到的数值。
+ */
 function clampConfidence(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.min(1, Math.max(0, parsed)) : fallback;

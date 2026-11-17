@@ -1,3 +1,6 @@
+/**
+ * @file 图任务存储。持久化运行记录、事件、产物、租约和预算结算，支撑任务恢复。
+ */
 import {
   Injectable,
   ConflictException,
@@ -48,8 +51,20 @@ export interface RunCommand {
   plan?: unknown;
   text?: string;
 }
+/**
+ * 解析 JSON 数据，兼容已解码的对象。
+ *
+ * @param value 待校验或转换的值。
+ * @returns 本次操作整理后的结果。
+ */
 const json = (value: any) =>
   typeof value === "string" ? JSON.parse(value) : value;
+/**
+ * 将数据库任务行转换为图任务业务对象。
+ *
+ * @param r 当前需要处理的记录或响应。
+ * @returns 持久化图任务记录。
+ */
 const row = (r: any): GraphRun => ({
   ...r,
   payload: json(r.payload),
@@ -63,11 +78,20 @@ const row = (r: any): GraphRun => ({
 
 @Injectable()
 export class AgentRunRepository {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param db 共享数据库服务。
+   * @param config 应用运行配置。
+   */
   constructor(
     readonly db: DatabaseService,
     private readonly config: AppConfig,
   ) {}
 
+  /**
+   * 确认当前配置已启用所需的持久化能力。
+   */
   assertEnabled() {
     if (!this.config.agentGraphEnabled)
       throw new NotFoundException("可恢复任务未启用");
@@ -75,6 +99,13 @@ export class AgentRunRepository {
       throw new ServiceUnavailableException("可恢复任务必须配置 MySQL");
   }
 
+  /**
+   * 按标识读取图任务。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 持久化图任务记录。
+   */
   async get(id: string, context: AccessContext): Promise<GraphRun> {
     const rows = await this.db.query(
       "SELECT * FROM agent_runs WHERE run_id=? AND user_id=? AND space_id=? AND graph_version IS NOT NULL",
@@ -84,6 +115,12 @@ export class AgentRunRepository {
     return row(rows[0]);
   }
 
+  /**
+   * 按内部任务标识读取完整运行记录。
+   *
+   * @param id 目标记录的唯一标识。
+   * @returns 持久化图任务记录。
+   */
   async internal(id: string): Promise<GraphRun> {
     const rows = await this.db.query(
       "SELECT * FROM agent_runs WHERE run_id=? AND graph_version IS NOT NULL",
@@ -93,6 +130,13 @@ export class AgentRunRepository {
     return row(rows[0]);
   }
 
+  /**
+   * 按请求幂等标识查找已经创建的任务。
+   *
+   * @param requestId request 对应的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 持久化图任务记录；未找到或不可用时可能为空。
+   */
   async findRequest(
     requestId: string,
     context: AccessContext,
@@ -104,6 +148,14 @@ export class AgentRunRepository {
     return found ? row(found) : null;
   }
 
+  /**
+   * 按查询条件读取图任务列表。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param conversation 用于筛选任务的会话标识（可选）。
+   * @param documentKey documentKey 参数（string）（可选）。
+   * @returns 持久化图任务记录列表。
+   */
   async list(
     context: AccessContext,
     conversation?: string,
@@ -123,6 +175,14 @@ export class AgentRunRepository {
     return rows.map(row);
   }
 
+  /**
+   * 根据输入创建图任务并返回结果。
+   *
+   * @param request 包含写作需求、编辑器快照和参考资料的 Agent 请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param skill 当前写作技能定义或快照（可选）。
+   * @returns 持久化图任务记录。
+   */
   async create(request: DocumentAgentDto, context: AccessContext, skill?: WritingSkillSnapshot) {
     this.assertEnabled();
     return this.db.transaction(async (manager) => {
@@ -219,6 +279,14 @@ export class AgentRunRepository {
     });
   }
 
+  /**
+   * 锁定任务并检查执行代次，阻止旧 Worker 写入新一轮任务。
+   *
+   * @param manager 当前数据库事务执行器。
+   * @param id 目标记录的唯一标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @returns 持久化图任务记录。
+   */
   async fence(manager: EntityManager, id: string, generation: number) {
     const [record] = await manager.query(
       "SELECT * FROM agent_runs WHERE run_id=? FOR UPDATE",
@@ -235,6 +303,11 @@ export class AgentRunRepository {
     return row(record);
   }
 
+  /**
+   * 原子领取可执行任务，并更新 Worker 租约。
+   *
+   * @returns 持久化图任务记录；未找到或不可用时可能为空。
+   */
   async claim(): Promise<GraphRun | null> {
     return this.db.transaction(async (manager) => {
       await manager.query(
@@ -262,6 +335,13 @@ export class AgentRunRepository {
     });
   }
 
+  /**
+   * 续期当前 Worker 的任务租约。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @returns 持久化图任务记录。
+   */
   async heartbeat(id: string, generation: number) {
     return this.db.transaction(async (manager) => {
       const run = await this.fence(manager, id, generation);
@@ -273,6 +353,13 @@ export class AgentRunRepository {
     });
   }
 
+  /**
+   * 读取必需的持久化任务产物，缺失时中止当前操作。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param key 查询或存储使用的键。
+   * @returns T 类型的处理结果。
+   */
   async artifact<T>(id: string, key: string): Promise<T> {
     const [record] = await this.db.query<any>(
       "SELECT payload FROM agent_run_artifacts WHERE run_id=? AND artifact_key=?",
@@ -282,11 +369,26 @@ export class AgentRunRepository {
     return json(record.payload);
   }
 
+  /**
+   * 读取可选任务产物，允许产物尚未生成。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param key 查询或存储使用的键。
+   * @returns T 类型的处理结果；未找到或不可用时可能为空。
+   */
   async optionalArtifact<T>(id: string, key: string): Promise<T | null> {
     const [record] = await this.db.query<any>('SELECT payload FROM agent_run_artifacts WHERE run_id=? AND artifact_key=?', [id, key]);
     return record ? json(record.payload) : null;
   }
 
+  /**
+   * 保存任务中间产物，供后续节点和恢复路径复用。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @param key 查询或存储使用的键。
+   * @param value 待校验或转换的值。
+   */
   async saveArtifact(
     id: string,
     generation: number,
@@ -302,6 +404,13 @@ export class AgentRunRepository {
     });
   }
 
+  /**
+   * 更新运行所处阶段并记录相关状态。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @param stage 当前任务执行阶段。
+   */
   async stage(id: string, generation: number, stage: string) {
     await this.db.transaction(async (manager) => {
       await this.fence(manager, id, generation);
@@ -312,6 +421,13 @@ export class AgentRunRepository {
     });
   }
 
+  /**
+   * 把当前执行的阶段追踪写入任务记录。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @param traces 当前范围内的检索或执行追踪。
+   */
   async recordTraces(id: string, generation: number, traces: unknown) {
     await this.db.transaction(async (manager) => {
       await this.fence(manager, id, generation);
@@ -322,6 +438,13 @@ export class AgentRunRepository {
     });
   }
 
+  /**
+   * 持久化已经校验的交付结果及其引用证据。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @param payload 需要传递或持久化的业务数据。
+   */
   async saveDelivery(
     id: string,
     generation: number,
@@ -338,6 +461,14 @@ export class AgentRunRepository {
     });
   }
 
+  /**
+   * 保存一条可按游标读取的任务事件。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @param event 需要处理的事件。
+   * @param data 当前事件或操作携带的数据。
+   */
   async event(
     id: string,
     generation: number | undefined,
@@ -381,6 +512,13 @@ export class AgentRunRepository {
     });
   }
 
+  /**
+   * 读取指定游标之后的任务事件。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param after 本次变更后的内容或状态。
+   * @returns 整理后的结果列表。
+   */
   async events(id: string, after: number) {
     const rows = await this.db.query<any>(
       "SELECT seq,event,payload FROM agent_run_events WHERE run_id=? AND seq>? ORDER BY seq LIMIT 200",
@@ -392,6 +530,16 @@ export class AgentRunRepository {
     }));
   }
 
+  /**
+   * 在执行代次有效时保存任务终态，同时保留已经生成的有效交付。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @param status 本次需要记录或切换到的状态。
+   * @param elapsed 当前步骤已消耗的时间。
+   * @param control 当前任务的控制输入。
+   * @param error 本次操作捕获的异常（可选）。
+   */
   async finish(
     id: string,
     generation: number,
@@ -446,6 +594,15 @@ export class AgentRunRepository {
     });
   }
 
+  /**
+   * 处理暂停、继续或停止指令，并更新任务控制状态。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param command 本次图任务控制命令。
+   * @param kind 当前结果或来源的分类。
+   * @returns 持久化图任务记录。
+   */
   async command(
     id: string,
     context: AccessContext,
@@ -521,6 +678,15 @@ export class AgentRunRepository {
     });
   }
 
+  /**
+   * 增加本次执行已使用的资源计数。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @param counter 执行次数或用量计数器。
+   * @param limit 本次读取或处理的数量上限。
+   * @returns 模型和工具调用用量。
+   */
   async increment(
     id: string,
     generation: number,
@@ -543,6 +709,17 @@ export class AgentRunRepository {
     });
   }
 
+  /**
+   * 在发起模型调用前预留资源预算。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @param prompt 发送给模型的提示词。
+   * @param maxOutput maxOutput 对应的数量或范围限制。
+   * @param limits 本次执行的资源与时间上限。
+   * @param finalReserve 为最终结果生成预留的额度。
+   * @returns 模型和工具调用用量。
+   */
   async reserve(
     id: string,
     generation: number,
@@ -583,6 +760,14 @@ export class AgentRunRepository {
     return { reservation, budget };
   }
 
+  /**
+   * 按实际用量结算已经预留的调用预算。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param reservation 调用前预留的预算记录。
+   * @param actual 本次实际得到的值（可选）。
+   * @returns 模型和工具调用用量。
+   */
   async settle(
     id: string,
     reservation: string,
@@ -635,6 +820,12 @@ export class AgentRunRepository {
     });
   }
 
+  /**
+   * 结算中断执行遗留的预算预留，避免恢复时重复使用额度。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   */
   async settleAbandoned(id: string, generation: number) {
     const rows = await this.db.query<any>(
       "SELECT reservation_id FROM agent_model_reservations WHERE run_id=? AND generation<? AND settled=FALSE",
@@ -643,6 +834,9 @@ export class AgentRunRepository {
     for (const r of rows) await this.settle(id, r.reservation_id);
   }
 
+  /**
+   * 清理已结束或过期操作留下的资源。
+   */
   async cleanup() {
     await this.db.transaction(async (manager) => {
       const rows = await manager.query(

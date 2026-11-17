@@ -1,3 +1,6 @@
+/**
+ * @file 文档记忆协议。定义记忆项、来源证据、提取状态与后台任务结构。
+ */
 export type DocumentMemoryStatus =
   | "pending"
   | "extracting"

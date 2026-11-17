@@ -1,3 +1,6 @@
+/**
+ * @file 数据库基础服务。管理 MySQL 连接、事务、初始化迁移与表结构契约检查。
+ */
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { DataSource, type EntityManager } from 'typeorm';
 import { AppConfig } from '../config/app-config.js';
@@ -14,8 +17,18 @@ import { WRITING_PREFERENCES_SCHEMA } from '../ai/writing-preferences.schema.js'
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private dataSource?: DataSource;
 
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   */
   constructor(private readonly config: AppConfig) {}
 
+  /**
+   * 判断当前是否启用数据库持久化。
+   *
+   * @returns 条件是否满足的判断结果。
+   */
   get enabled(): boolean {
     return (
       this.metadataEnabled ||
@@ -26,26 +39,54 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  /**
+   * 判断文档与业务元数据是否使用数据库存储。
+   *
+   * @returns 条件是否满足的判断结果。
+   */
   get metadataEnabled(): boolean {
     return this.config.metadataStore === 'mysql';
   }
 
+  /**
+   * 判断记忆相关数据是否使用数据库持久化。
+   *
+   * @returns 条件是否满足的判断结果。
+   */
   get memoryEnabled(): boolean {
     return this.config.memoryStore === 'mysql';
   }
 
+  /**
+   * 判断索引任务是否使用数据库队列。
+   *
+   * @returns 条件是否满足的判断结果。
+   */
   get indexJobsEnabled(): boolean {
     return this.config.indexJobStore === 'mysql';
   }
 
+  /**
+   * 判断检索追踪和反馈是否持久化。
+   *
+   * @returns 条件是否满足的判断结果。
+   */
   get observabilityEnabled(): boolean {
     return this.config.observabilityStore === 'mysql';
   }
 
+  /**
+   * 判断文档导入任务是否使用数据库队列。
+   *
+   * @returns 条件是否满足的判断结果。
+   */
   get importJobsEnabled(): boolean {
     return this.config.importJobStore === 'mysql';
   }
 
+  /**
+   * 在 NestJS 模块启动时初始化所需资源。
+   */
   async onModuleInit(): Promise<void> {
     if (!this.enabled) return;
     if (!this.config.databaseUrl) {
@@ -68,24 +109,48 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * 在模块关闭时停止后台工作并释放连接与资源。
+   */
   async onModuleDestroy(): Promise<void> {
     if (this.dataSource?.isInitialized) await this.dataSource.destroy();
   }
 
+  /**
+   * 通过共享数据源执行带绑定参数的 SQL 查询。
+   *
+   * @param sql 需要执行的参数化 SQL。
+   * @param params 查询或调用所需的绑定参数。
+   * @returns 整理后的结果列表。
+   */
   async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
     if (!this.dataSource) throw new Error('MySQL store is not enabled');
     return (await this.dataSource.query(sql, params)) as T[];
   }
 
+  /**
+   * 在同一数据库事务中执行操作，统一提交或回滚。
+   *
+   * @param work 当前数据库事务执行器。
+   * @returns T 类型的处理结果。
+   */
   async transaction<T>(work: (manager: EntityManager) => Promise<T>): Promise<T> {
     return this.source.transaction(work);
   }
 
+  /**
+   * 返回已经初始化的数据库连接，供需要事务能力的调用方使用。
+   *
+   * @returns DataSource 类型的处理结果。
+   */
   get source(): DataSource {
     if (!this.dataSource) throw new Error('MySQL store is not enabled');
     return this.dataSource;
   }
 
+  /**
+   * 按当前代码要求创建或升级数据库结构。
+   */
   async migrate(): Promise<void> {
     await this.query(WIKI_SCHEMA);
     for (const sql of WORKSPACE_SCHEMA) await this.query(sql);
@@ -475,6 +540,9 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     await this.assertSchemaContract();
   }
 
+  /**
+   * 确认已有数据库结构满足当前代码的表、列和索引要求。
+   */
   async assertSchemaContract(): Promise<void> {
     const problems = await inspectSchemaContract((sql, params = []) => this.query(sql, params));
     if (problems.length) {
@@ -485,6 +553,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * 仅在缺失时补建指定数据库列。
+   *
+   * @param table 数据库表名。
+   * @param column 数据库列名或目标列。
+   * @param alterSql 升级目标表结构使用的 SQL。
+   */
   private async ensureColumn(table: string, column: string, alterSql: string): Promise<void> {
     const rows = await this.query<{ count: number | string }>(
       `SELECT COUNT(*) AS count FROM information_schema.COLUMNS
@@ -494,6 +569,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     if (Number(rows[0]?.count ?? 0) === 0) await this.query(alterSql);
   }
 
+  /**
+   * 在目标列存在时移除旧结构中的列。
+   *
+   * @param table 数据库表名。
+   * @param column 数据库列名或目标列。
+   * @param alterSql 升级目标表结构使用的 SQL。
+   */
   private async dropColumnIfExists(table: string, column: string, alterSql: string): Promise<void> {
     const rows = await this.query<{ count: number | string }>(
       `SELECT COUNT(*) AS count FROM information_schema.COLUMNS
@@ -503,6 +585,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     if (Number(rows[0]?.count ?? 0) > 0) await this.query(alterSql);
   }
 
+  /**
+   * 在缺失时创建指定索引。
+   *
+   * @param table 数据库表名。
+   * @param index 当前条目或块的序号。
+   * @param createSql 创建目标表结构使用的 SQL。
+   */
   private async ensureIndex(table: string, index: string, createSql: string): Promise<void> {
     const rows = await this.query<{ count: number | string }>(
       `SELECT COUNT(*) AS count FROM information_schema.STATISTICS
@@ -512,6 +601,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     if (Number(rows[0]?.count ?? 0) === 0) await this.query(createSql);
   }
 
+  /**
+   * 调整旧版字段约束，使历史表结构兼容当前写入。
+   *
+   * @param table 数据库表名。
+   * @param column 数据库列名或目标列。
+   * @param alterSql 升级目标表结构使用的 SQL。
+   */
   private async relaxLegacyColumn(table: string, column: string, alterSql: string): Promise<void> {
     const rows = await this.query<{ is_nullable: string }>(
       `SELECT IS_NULLABLE AS is_nullable FROM information_schema.COLUMNS
@@ -524,6 +620,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
 }
 
+/**
+ * 判断异常是否由旧表缺少字段引起。
+ *
+ * @param error 本次操作捕获的异常。
+ * @param column 数据库列名或目标列。
+ * @returns 条件是否满足的判断结果。
+ */
 function isUnknownColumn(error: unknown, column: string): boolean {
   const value = error as { code?: string; message?: string };
   return value?.code === 'ER_BAD_FIELD_ERROR' && String(value.message ?? '').includes(column);

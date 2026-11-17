@@ -1,3 +1,6 @@
+/**
+ * @file LLM 调用适配。封装模型选择、HTTP 请求、流式响应、工具调用及查询扩展。
+ */
 import { Injectable, ServiceUnavailableException } from "@nestjs/common";
 import type { AiWriteDto } from "../common/dto.js";
 import { AppConfig } from "../config/app-config.js";
@@ -12,14 +15,43 @@ export class LlmService {
   // Reasoning exists only during a tool conversation, never in serialized messages, memory or audit.
   private readonly reasoning = new WeakMap<AgentMessage, { profileId: string; content: string }>();
   private readonly router: ModelRouter;
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   */
   constructor(private readonly config: AppConfig) { this.router = new ModelRouter(config); }
 
+  /**
+   * 为一次 Agent 调用选择模型并创建包含预算与路由信息的尝试记录。
+   *
+   * @param options 控制本次行为的可选配置。
+   * @param toolsCount 本次提供给模型的工具数量。
+   * @param excludedProfiles 本次调用已排除的模型配置标识。
+   * @returns AgentModelAttempt 类型的处理结果。
+   */
   agentAttempt(options: AgentModelOptions = {}, toolsCount = 0, excludedProfiles: string[] = []): AgentModelAttempt {
     const { profile, model, provider, contextWindow } = this.router.select(options, toolsCount, excludedProfiles);
     return { profile, model, provider, contextWindow };
   }
+  /**
+   * 判断当前失败是否允许切换到候选模型。
+   *
+   * @param error 本次操作捕获的异常。
+   * @returns 条件是否满足的判断结果。
+   */
   canFallback(error: unknown): boolean { return canFallbackModel(error); }
+  /**
+   * 生成当前模型配置指纹，供能力验证与恢复检查使用。
+   *
+   * @returns 整理后的文本或标识。
+   */
   configurationFingerprint(): string { return this.router.fingerprint(); }
+  /**
+   * 返回当前配置的主要写作模型标识。
+   *
+   * @returns 整理后的文本或标识。
+   */
   get mainModel(): string { return this.router.mainModel(); }
   get thinkingSupported(): boolean { return this.router.thinkingSupported(); }
 
@@ -27,6 +59,15 @@ export class LlmService {
     return this.router.configured();
   }
 
+  /**
+   * 执行一次带工具协议的模型请求，并规范化助手响应。
+   *
+   * @param messages 按对话顺序排列的模型消息。
+   * @param tools 本次向模型开放的工具集合。
+   * @param signal 取消信号，用于中止请求和后台处理（可选）。
+   * @param options 控制本次行为的可选配置。
+   * @returns 模型消息。
+   */
   async agentTurn(messages: AgentMessage[], tools: FunctionTool[], signal?: AbortSignal,
     options: AgentModelOptions = {}): Promise<{ message: AgentMessage; usage: any; thinkingDetected?: boolean }> {
     const profile = this.router.select(options, tools.length);
@@ -59,6 +100,13 @@ export class LlmService {
     return Boolean(this.config.llmApiKey && this.config.agentWebSearchUrl);
   }
 
+  /**
+   * 执行模型或服务提供的网页搜索，并整理来源结果。
+   *
+   * @param query 用户问题或检索查询。
+   * @param signal 取消信号，用于中止请求和后台处理（可选）。
+   * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+   */
   async searchWeb(query: string, signal?: AbortSignal) {
     if (!this.config.llmApiKey) throw new ServiceUnavailableException("联网搜索服务凭证尚未配置");
     if (!this.webSearchConfigured) throw new Error('联网搜索尚未配置');
@@ -96,6 +144,13 @@ export class LlmService {
     } } : {}) };
   }
 
+  /**
+   * 验证当前思考参数能否被配置的模型服务接受。
+   *
+   * @param on 启用功能时提交给模型的配置。
+   * @param off 关闭功能时提交给模型的配置。
+   * @param signal 取消信号，用于中止请求和后台处理。
+   */
   async verifyThinking(on: Record<string, unknown>, off: Record<string, unknown>, signal: AbortSignal) {
     const tools: FunctionTool[] = [{ type: 'function', function: { name: 'report_result', description: '提交计算结果',
       parameters: { type: 'object', properties: { answer: { type: 'number' } }, required: ['answer'], additionalProperties: false } } }];
@@ -117,6 +172,14 @@ export class LlmService {
     }
   }
 
+  /**
+   * 调用主模型生成完整文本，保留超时与取消控制。
+   *
+   * @param prompt 发送给模型的提示词。
+   * @param signal 取消信号，用于中止请求和后台处理（可选）。
+   * @param maxOutputTokens 为模型输出预留的 Token 上限（可选）。
+   * @returns 整理后的文本或标识。
+   */
   async complete(
     prompt: string,
     signal?: AbortSignal,
@@ -137,6 +200,14 @@ export class LlmService {
     return String(data.choices?.[0]?.message?.content ?? "");
   }
 
+  /**
+   * 调用主模型并持续解析文本增量，同时维护路由健康状态。
+   *
+   * @param prompt 发送给模型的提示词。
+   * @param signal 取消信号，用于中止请求和后台处理（可选）。
+   * @param maxOutputTokens 为模型输出预留的 Token 上限（可选）。
+   * @returns 按执行顺序逐步产出的进度事件或处理结果。
+   */
   async *stream(
     prompt: string,
     signal?: AbortSignal,
@@ -204,10 +275,11 @@ export class LlmService {
   }
 
   /**
+   * 从模型响应中选择并解析结构化工具调用。
+   *
    *  @param  request  用户请求
    *  @param  tools  可用的工具
    * @returns  返回一个 Promise，解析后包含：选中的工具名 name、参数 arguments、选择理由 reason
-   *
    */
   async selectTool(
     request: AiWriteDto,
@@ -252,6 +324,14 @@ export class LlmService {
     };
   }
 
+  /**
+   * 调用结构化工具扩展检索查询，保留原问题中的关键术语。
+   *
+   * @param query 用户问题或检索查询。
+   * @param context 当前操作的上下文。
+   * @param maxVariants maxVariants 对应的数量或范围限制。
+   * @returns 整理后的字符串列表。
+   */
   async expandQueries(
     query: string,
     context: string,
@@ -290,6 +370,12 @@ export class LlmService {
       : [];
   }
 
+  /**
+   * 从文档内容提取有原文依据的长期记忆项。
+   *
+   * @param chunks 需要写入或处理的索引分块集合。
+   * @returns 从原文提取的结构化记忆。
+   */
   async extractDocumentMemory(
     chunks: Array<{ hash: string; anchor: string; content: string }>,
   ): Promise<ExtractedDocumentMemory> {
@@ -324,12 +410,27 @@ export class LlmService {
     };
   }
 
+  /**
+   * 构建模型请求的默认参数，并合并本次调用选项。
+   *
+   * @param body 请求正文或待提交的数据。
+   * @param profile 模型配置或文档记忆档案。
+   * @returns Record<string, unknown> 类型的处理结果。
+   */
   private defaultBody(body: Record<string, unknown>, profile: ReturnType<ModelRouter['defaultMain']>) {
     if (!profile.profile) return body;
     const thinking = profile.thinkingMode === 'always_on' ? profile.thinkingOnBody : profile.thinkingOffBody;
     return { ...body, ...profile.extraBody, ...thinking, model: profile.model };
   }
 
+  /**
+   * 按选定模型配置发送 HTTP 请求，统一处理认证、重试和上游失败。
+   *
+   * @param body 请求正文或待提交的数据。
+   * @param signal 取消信号，用于中止请求和后台处理（可选）。
+   * @param selected 当前选中的条目（可选）。
+   * @returns any 类型的处理结果。
+   */
   private async request(body: unknown, signal?: AbortSignal, selected?: ReturnType<ModelRouter['select']>): Promise<any> {
     if (!selected) this.ensureConfigured();
     const request = body as Record<string, unknown>;
@@ -356,10 +457,20 @@ export class LlmService {
     }
   }
 
+  /**
+   * 在发起模型请求前检查必要配置，缺失时给出明确错误。
+   */
   private ensureConfigured(): void {
     if (!this.isConfigured) throw new ServiceUnavailableException('LLM_API_KEY is required for /ai/write.');
   }
 
+  /**
+   * 把网络或模型服务异常映射为统一的调用失败信息。
+   *
+   * @param error 本次操作捕获的异常。
+   * @param signal 取消信号，用于中止请求和后台处理。
+   * @returns 本次操作整理后的结果。
+   */
   private transportFailure(error: unknown, signal: AbortSignal): unknown {
     if (signal.aborted) {
       if (signal.reason?.name === 'TimeoutError')
@@ -373,6 +484,12 @@ export class LlmService {
     return error;
   }
 
+  /**
+   * 根据选定模型配置构建认证与附加请求头。
+   *
+   * @param apiKey 仅在服务端使用的上游接口凭据。
+   * @returns Record<string, string> 类型的处理结果。
+   */
   private profileHeaders(apiKey: string): Record<string, string> {
     return { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
   }

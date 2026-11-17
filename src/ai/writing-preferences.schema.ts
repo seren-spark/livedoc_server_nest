@@ -1,3 +1,6 @@
+/**
+ * @file 写作偏好表结构。声明偏好及其幂等处理记录所需的数据库结构。
+ */
 export const WRITING_PREFERENCES_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS writing_preference_states (
     space_id VARCHAR(128) NOT NULL,

@@ -1,3 +1,6 @@
+/**
+ * @file 对话历史存储。保存和读取完整问答轮次，并兼容旧版消息记录。
+ */
 import type { AccessContext } from "../common/types.js";
 import { DatabaseService } from "../database/database.service.js";
 
@@ -15,8 +18,18 @@ export interface LegacyMessageRow {
 }
 
 export class ConversationMemoryRepository {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param database 共享数据库服务。
+   */
   constructor(private readonly database: DatabaseService) {}
 
+  /**
+   * 保存完整的一轮用户输入与助手回答。
+   *
+   * @param input 当前用户、空间与团队身份，用于权限校验。
+   */
   async addTurn(input: {
     turnId: string;
     conversationId: string;
@@ -71,6 +84,15 @@ export class ConversationMemoryRepository {
     });
   }
 
+  /**
+   * 读取最近的完整问答轮次，保持原有对话顺序。
+   *
+   * @param conversationId 当前会话标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param docId 知识文档标识。
+   * @param limit 本次读取或处理的数量上限。
+   * @returns 整理后的结果列表。
+   */
   async recentTurns(
     conversationId: string,
     context: AccessContext,
@@ -96,12 +118,22 @@ export class ConversationMemoryRepository {
       .map((row) => ({ ...row, created_at: new Date(row.created_at) }));
   }
 
+  /**
+   * 删除指定文档对应的数据及关联记录。
+   *
+   * @param docId 知识文档标识。
+   */
   async deleteDocument(docId: string): Promise<void> {
     await this.database.query("DELETE FROM conversation_turns WHERE doc_id=?", [
       docId,
     ]);
   }
 
+  /**
+   * 按旧版消息格式保存一条对话记录。
+   *
+   * @param input 当前用户、空间与团队身份，用于权限校验。
+   */
   async addLegacyMessage(input: {
     messageId: string;
     conversationId: string;
@@ -128,6 +160,14 @@ export class ConversationMemoryRepository {
     );
   }
 
+  /**
+   * 读取旧版格式的最近消息，供兼容路径使用。
+   *
+   * @param conversationId 当前会话标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param limit 本次读取或处理的数量上限。
+   * @returns 整理后的结果列表。
+   */
   async recentLegacyMessages(
     conversationId: string,
     context: AccessContext,
@@ -144,6 +184,12 @@ export class ConversationMemoryRepository {
   }
 }
 
+/**
+ * 生成与参数数量匹配的 SQL 占位符。
+ *
+ * @param values 待转换或去重的值集合。
+ * @returns 整理后的文本或标识。
+ */
 function placeholders(values: unknown[]): string {
   return values.map(() => "?").join(",");
 }

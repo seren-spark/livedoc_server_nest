@@ -1,3 +1,6 @@
+/**
+ * @file 持久化任务通用存储。统一任务租约、超时领取和状态写回，并提供内存运行路径。
+ */
 import type { DatabaseService } from '../database/database.service.js';
 
 export type PersistentJobStatus =
@@ -49,8 +52,19 @@ interface FinishOptions<TJob extends PersistentJobRecord> {
 const ACTIVE_STATUSES = ['queued', 'running', 'retry_wait'] as const;
 
 export class PersistentJobStore<TJob extends PersistentJobRecord> {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param options 控制本次行为的可选配置。
+   */
   constructor(private readonly options: PersistentJobStoreOptions<TJob>) {}
 
+  /**
+   * 按标识读取后台任务。
+   *
+   * @param jobId 后台任务标识。
+   * @returns TJob 类型的处理结果；未找到或不可用时可能为空。
+   */
   async get(jobId: string): Promise<TJob | null> {
     if (!this.options.enabled()) return this.options.jobs.get(jobId) ?? null;
     const rows = await this.options.database.query<Record<string, unknown>>(
@@ -60,6 +74,13 @@ export class PersistentJobStore<TJob extends PersistentJobRecord> {
     return rows[0] ? this.options.mapRow(rows[0]) : null;
   }
 
+  /**
+   * 领取下一条可执行任务，并取得对应执行代次与租约。
+   *
+   * @param workerId 当前执行 Worker 的标识。
+   * @param targetJobId targetJob 对应的唯一标识（可选）。
+   * @returns TJob 类型的处理结果；未找到或不可用时可能为空。
+   */
   async claimNext(workerId: string, targetJobId?: string): Promise<TJob | null> {
     const now = new Date();
     if (!this.options.enabled()) {
@@ -103,6 +124,14 @@ export class PersistentJobStore<TJob extends PersistentJobRecord> {
     return jobId ? this.get(jobId) : null;
   }
 
+  /**
+   * 续期当前 Worker 的任务租约。
+   *
+   * @param jobId 后台任务标识。
+   * @param workerId 当前执行 Worker 的标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @returns 条件是否满足的判断结果。
+   */
   async heartbeat(
     jobId: string,
     workerId: string,
@@ -134,6 +163,14 @@ export class PersistentJobStore<TJob extends PersistentJobRecord> {
     return true;
   }
 
+  /**
+   * 检查当前 Worker 与执行代次是否仍持有任务租约。
+   *
+   * @param jobId 后台任务标识。
+   * @param workerId 当前执行 Worker 的标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @returns 条件是否满足的判断结果。
+   */
   async ownsLease(
     jobId: string,
     workerId: string | null,
@@ -151,11 +188,26 @@ export class PersistentJobStore<TJob extends PersistentJobRecord> {
     );
   }
 
+  /**
+   * 检查任务当前是否处于执行状态。
+   *
+   * @param jobId 后台任务标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @returns 条件是否满足的判断结果。
+   */
   async isRunning(jobId: string, generation: number): Promise<boolean> {
     const job = await this.get(jobId);
     return Boolean(job && job.status === 'running' && job.generation === generation);
   }
 
+  /**
+   * 检查 Worker 和执行代次后写回任务结果、完成时间与下一次执行时间。
+   *
+   * @param jobId 后台任务标识。
+   * @param status 本次需要记录或切换到的状态。
+   * @param options 控制本次行为的可选配置。
+   * @returns TJob 类型的处理结果；未找到或不可用时可能为空。
+   */
   async finish(
     jobId: string,
     status: TJob['status'],
@@ -236,6 +288,11 @@ export class PersistentJobStore<TJob extends PersistentJobRecord> {
     return next;
   }
 
+  /**
+   * 按筛选条件取消仍可取消的任务。
+   *
+   * @param input 本次操作的输入数据。
+   */
   async cancelWhere(input: {
     whereSql: string;
     params: unknown[];
@@ -269,6 +326,11 @@ export class PersistentJobStore<TJob extends PersistentJobRecord> {
     }
   }
 
+  /**
+   * 按筛选条件删除任务记录。
+   *
+   * @param input 本次操作的输入数据。
+   */
   async deleteWhere(input: {
     whereSql: string;
     params: unknown[];
@@ -286,6 +348,12 @@ export class PersistentJobStore<TJob extends PersistentJobRecord> {
     }
   }
 
+  /**
+   * 统计指定空间中的活跃任务数。
+   *
+   * @param spaceId space 对应的唯一标识。
+   * @returns 计算得到的数值。
+   */
   async activeCountBySpace(spaceId: string): Promise<number> {
     if (!this.options.enabled()) {
       return [...this.options.jobs.values()].filter(
@@ -301,6 +369,13 @@ export class PersistentJobStore<TJob extends PersistentJobRecord> {
   }
 }
 
+/**
+ * 根据状态、下次运行时间与租约判断任务是否可被领取。
+ *
+ * @param job 当前后台任务记录。
+ * @param now 本次操作采用的时间基准。
+ * @returns 条件是否满足的判断结果。
+ */
 function isClaimable(job: PersistentJobRecord, now: Date): boolean {
   return (
     ((job.status === 'queued' || job.status === 'retry_wait') &&

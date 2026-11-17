@@ -1,3 +1,6 @@
+/**
+ * @file 检索上下文压缩。从候选证据中提取相关内容，在 Token 预算内组装生成上下文。
+ */
 import { Injectable } from "@nestjs/common";
 import { getEncoding, type Tiktoken } from "js-tiktoken";
 import type { Citation } from "../common/types.js";
@@ -9,6 +12,11 @@ import { markdownCompressionUnits } from "./chunker.js";
 export class ContextCompressorService {
   private readonly tokenizer: Tiktoken;
 
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   */
   constructor(private readonly config: AppConfig) {
     this.tokenizer = getEncoding(
       this.config.tokenizerEncoding as Parameters<typeof getEncoding>[0],
@@ -65,6 +73,12 @@ export class ContextCompressorService {
     candidates.sort((a, b) => b.score - a.score || a.index - b.index);
     // ⑤ 贪心选择（在 token 预算内）
     const selected: typeof candidates = [];
+    /**
+     * 在总 Token 预算内组合筛选后的引用证据。
+     *
+     * @param items 需要处理的条目集合。
+     * @returns 整理后的文本或标识。
+     */
     const assemble = (items: typeof candidates) => [...items].sort((a, b) => a.index - b.index)
       .map((item) => item.text).join("\n\n");
     for (const candidate of candidates) {
@@ -78,10 +92,23 @@ export class ContextCompressorService {
     return plain ? this.truncate(plain.text, tokenBudget) : "";
   }
 
+  /**
+   * 计算压缩上下文使用的 Token 数。
+   *
+   * @param text 待处理的文本。
+   * @returns 计算得到的数值。
+   */
   count(text: string): number {
     return this.tokenizer.encode(text).length;
   }
 
+  /**
+   * 缩短文本使其满足指定上下文预算。
+   *
+   * @param text 待处理的文本。
+   * @param budget 本次处理允许使用的 Token 或调用预算。
+   * @returns 整理后的文本或标识。
+   */
   truncate(text: string, budget: number): string {
     if (budget <= 0) return "";
     const tokens = this.tokenizer.encode(text);
@@ -91,6 +118,12 @@ export class ContextCompressorService {
   }
 }
 
+/**
+ * 沿句子边界拆分文本，供相关内容提取使用。
+ *
+ * @param content 待处理的正文内容。
+ * @returns 整理后的字符串列表。
+ */
 export function splitSentences(content: string): string[] {
   const normalized = content.trim().replace(/[ \t]+/g, " ");
   return (
@@ -102,7 +135,7 @@ export function splitSentences(content: string): string[] {
 }
 /**
  * 计算句子的得分
- * 
+ *
  * 得分 = query覆盖率 × 0.8 + 句子覆盖率 × 0.2 + 位置权重 × 0.05
  * @param sentence 输入的句子
  * @param queryTerms 查询关键词的 Set

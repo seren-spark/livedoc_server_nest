@@ -1,3 +1,6 @@
+/**
+ * @file 索引任务存储。持久化任务与去重标识，读取指定文档的任务历史。
+ */
 import { DatabaseService } from "../database/database.service.js";
 import type { DocumentIndexRequest } from "../documents/document.types.js";
 import type { IndexJobRecord } from "./index-job.types.js";
@@ -8,8 +11,20 @@ const JOB_COLUMNS = `job_id,doc_id,document_version,generation,status,attempts,m
   lease_expires_at,next_run_at,error,created_at,started_at,finished_at,updated_at`;
 
 export class IndexJobsRepository {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param database 共享数据库服务。
+   */
   constructor(private readonly database: DatabaseService) {}
 
+  /**
+   * 对索引任务做重复检查后提交后台任务。
+   *
+   * @param job 当前索引任务及其执行版本。
+   * @param transactionManager 当前数据库事务执行器（可选）。
+   * @returns 索引任务记录。
+   */
   async enqueue(
     job: IndexJobRecord,
     transactionManager?: EntityManager,
@@ -26,6 +41,13 @@ export class IndexJobsRepository {
     }
   }
 
+  /**
+   * 向存储写入新的索引任务。
+   *
+   * @param job 当前索引任务及其执行版本。
+   * @param manager 当前数据库事务执行器。
+   * @returns 索引任务记录。
+   */
   private async insert(
     job: IndexJobRecord,
     manager: EntityManager,
@@ -72,6 +94,12 @@ export class IndexJobsRepository {
     return next;
   }
 
+  /**
+   * 读取指定文档关联的任务记录。
+   *
+   * @param docId 知识文档标识。
+   * @returns 索引任务记录列表。
+   */
   async listByDocument(docId: string): Promise<IndexJobRecord[]> {
     const rows = await this.database.query<Record<string, unknown>>(
       `SELECT ${JOB_COLUMNS} FROM index_jobs WHERE doc_id=?`,
@@ -80,6 +108,12 @@ export class IndexJobsRepository {
     return rows.map(mapIndexJob);
   }
 
+  /**
+   * 按幂等键查询已存在的任务，避免重复创建。
+   *
+   * @param dedupeKey dedupeKey 参数（string | null）。
+   * @returns 索引任务记录；未找到或不可用时可能为空。
+   */
   private async findByDedupeKey(
     dedupeKey: string | null,
   ): Promise<IndexJobRecord | null> {
@@ -91,13 +125,31 @@ export class IndexJobsRepository {
   }
 }
 
+/**
+ * 解析任务负载，恢复索引所需的输入数据。
+ *
+ * @param value 待校验或转换的值。
+ * @returns DocumentIndexRequest 类型的处理结果。
+ */
 function parsePayload(value: unknown): DocumentIndexRequest {
   return typeof value === "string"
     ? (JSON.parse(value) as DocumentIndexRequest)
     : (value as DocumentIndexRequest);
 }
 
+/**
+ * 将数据库任务行转换为索引任务对象。
+ *
+ * @param row 数据库查询返回的一行数据。
+ * @returns 索引任务记录。
+ */
 export function mapIndexJob(row: Record<string, unknown>): IndexJobRecord {
+  /**
+   * 把数据库时间值转换为 Date 对象，并处理空值。
+   *
+   * @param value 待校验或转换的值。
+   * @returns 时间对象；未找到或不可用时可能为空。
+   */
   const date = (value: unknown) =>
     value == null ? null : new Date(value as string | number | Date);
   return {

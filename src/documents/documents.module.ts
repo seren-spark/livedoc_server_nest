@@ -1,3 +1,6 @@
+/**
+ * @file 文档模块。组装文档管理、资源和长期记忆所需的服务。
+ */
 import { forwardRef, Module } from '@nestjs/common';
 import { IndexingModule } from '../indexing/indexing.module.js';
 import { RetrievalModule } from '../retrieval/retrieval.module.js';

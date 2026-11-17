@@ -1,3 +1,6 @@
+/**
+ * @file 计划步骤版本。计算步骤指纹和产物标识，识别计划变更后可复用与需重做的步骤。
+ */
 import { createHash } from "node:crypto";
 import type { ExecutionPlan } from "./document-agent.types.js";
 
@@ -11,7 +14,15 @@ export interface StepOutputVersion {
 
 export type StepOutputs = Record<string, string | StepOutputVersion>;
 
-/** Return the affected steps and their transitive dependents in plan order. */
+/**
+ * 按计划顺序返回已变化步骤及其所有传递依赖方。
+ *
+ *  Return the affected steps and their transitive dependents in plan order.
+ *
+ * @param steps 执行计划中的步骤集合。
+ * @param seedIds seed 对应的标识集合。
+ * @returns 整理后的字符串列表。
+ */
 export function dependencyClosure(steps: Step[], seedIds: readonly string[]): string[] {
   const known = new Set(steps.map((step) => step.id));
   if (seedIds.some((id) => !known.has(id)))
@@ -30,7 +41,17 @@ export function dependencyClosure(steps: Step[], seedIds: readonly string[]): st
   return steps.filter((step) => affected.has(step.id)).map((step) => step.id);
 }
 
-/** Select only current references whose dependencies are also currently available. */
+/**
+ * 只复用当前步骤版本及其依赖仍有效的产物。
+ *
+ *  Select only current references whose dependencies are also currently available.
+ *
+ * @param steps 执行计划中的步骤集合。
+ * @param outputs 已经完成的步骤输出。
+ * @param invalidated 已经因计划变化而失效的步骤标记。
+ * @param contextFingerprint 任务上下文或配置的稳定指纹（可选）。
+ * @returns Record<string, string> 类型的处理结果。
+ */
 export function activeStepOutputs(
   steps: Step[],
   outputs: StepOutputs,
@@ -59,6 +80,14 @@ export function activeStepOutputs(
   return Object.fromEntries(selected);
 }
 
+/**
+ * 根据步骤定义与依赖生成版本指纹。
+ *
+ * @param step 当前计划步骤。
+ * @param dependencyRefs 步骤依赖所引用的有效产物版本。
+ * @param contextFingerprint 任务上下文或配置的稳定指纹。
+ * @returns 整理后的文本或标识。
+ */
 export function stepFingerprint(
   step: Step,
   dependencyRefs: StepOutputs,
@@ -82,6 +111,13 @@ export function stepFingerprint(
   })).digest("hex");
 }
 
+/**
+ * 生成同时包含步骤与版本的产物标识。
+ *
+ * @param stepId step 对应的唯一标识。
+ * @param version 本次操作对应的内容版本。
+ * @returns 整理后的文本或标识。
+ */
 export function stepArtifactKey(stepId: string, version: number): string {
   if (!stepId || !Number.isSafeInteger(version) || version < 1)
     throw new Error("步骤产物版本无效");

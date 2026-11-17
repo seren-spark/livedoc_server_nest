@@ -1,3 +1,6 @@
+/**
+ * @file 图任务表结构。声明持久化任务、事件、产物及检查点需要的数据库表。
+ */
 import { CHECKPOINT_SCHEMA } from "../ai/graph/mysql-checkpoint-saver.js";
 export const AGENT_GRAPH_COLUMNS: Record<string, string> = {
   graph_version: "VARCHAR(16) NULL",

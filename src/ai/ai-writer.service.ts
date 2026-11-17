@@ -1,3 +1,6 @@
+/**
+ * @file 流式辅助写作。串联意图识别、RAG 检索、提示词和模型生成，并记录会话与效果。
+ */
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { evidenceSnapshot, promptEvidence } from '../evaluation/evidence.js';
@@ -47,6 +50,18 @@ export interface SseMessage {
 
 @Injectable()
 export class AiWriterService {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param retrieval 共享知识检索服务。
+   * @param memory ConversationMemoryService 依赖实例。
+   * @param llm 共享模型调用服务。
+   * @param documentSummary DocumentSummaryService 依赖实例。
+   * @param tools 本次向模型开放的工具集合。
+   * @param observability ObservabilityService 依赖实例。
+   * @param documents 需要筛选或处理的文档集合。
+   * @param documentMemory DocumentMemoryService 依赖实例。
+   */
   constructor(
     private readonly retrieval: RetrievalService,
     private readonly memory: ConversationMemoryService,
@@ -58,6 +73,14 @@ export class AiWriterService {
     private readonly documentMemory: DocumentMemoryService,
   ) {}
 
+  /**
+   * 准备检索证据并生成完整回答；知识类请求无证据时返回受限结果。
+   *
+   * @param request 当前业务请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param signal 取消信号，用于中止请求和后台处理（可选）。
+   * @returns 引用证据与本次检索追踪；未找到或不可用时可能为空。
+   */
   async complete(
     request: AiWriteDto,
     context: AccessContext,
@@ -120,6 +143,14 @@ export class AiWriterService {
     }
   }
 
+  /**
+   * 依次输出元信息、检索证据和生成文本增量，并记录结果与反馈追踪。
+   *
+   * @param request 当前业务请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param signal 取消信号，用于中止请求和后台处理（可选）。
+   * @returns 按执行顺序逐步产出的进度事件或处理结果。
+   */
   async *stream(
     request: AiWriteDto,
     context: AccessContext,
@@ -436,6 +467,13 @@ export class AiWriterService {
     };
   }
 
+  /**
+   * 在生成结束后保存本轮用户问题与回答。
+   *
+   * @param request 当前业务请求。
+   * @param answer 本轮生成的回答文本。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   */
   private async remember(
     request: AiWriteDto,
     answer: string,
@@ -452,10 +490,24 @@ export class AiWriterService {
   }
 }
 
+/**
+ * 判断当前生成结果是否满足插入编辑器的条件。
+ *
+ * @param intent intent 参数（WriteIntent）。
+ * @param hasEvidence 当前结果是否具有可使用的引用依据。
+ * @returns 条件是否满足的判断结果。
+ */
 function canInsert(intent: WriteIntent, hasEvidence: boolean): boolean {
   return !KNOWLEDGE_INTENTS.has(intent) || hasEvidence;
 }
 
+/**
+ * 整理本次使用的编辑器上下文摘要，用于链路追踪。
+ *
+ * @param query 用户问题或检索查询。
+ * @param selectionMs 证据筛选耗时，单位为毫秒。
+ * @returns 检索链路追踪。
+ */
 function editorContextTrace(query: string, selectionMs: number): RetrievalTrace {
   const rewrittenQuery = query.trim();
   return {
@@ -479,6 +531,12 @@ function editorContextTrace(query: string, selectionMs: number): RetrievalTrace 
   };
 }
 
+/**
+ * 检查生成回答的引用依据，识别证据不足或引用无效的情况。
+ *
+ * @param answer 本轮生成的回答文本。
+ * @param citations 包含来源、原文位置与内容的检索引用。
+ */
 export function validateGroundedAnswer(
   answer: string,
   citations: Citation[],
@@ -497,9 +555,15 @@ export function validateGroundedAnswer(
 }
 
 /**
+ * 仅保留最终回答实际引用的检索证据。
+ *
  * Return only evidence that the final answer actually referenced. Retrieval
  * candidates remain available in the trace, but must not be presented as if
  * the model used every candidate to support its answer.
+ *
+ * @param answer 本轮生成的回答文本。
+ * @param citations 包含来源、原文位置与内容的检索引用。
+ * @returns 引用证据列表。
  */
 export function selectGroundedCitations(
   answer: string,
@@ -545,6 +609,13 @@ export function scopeForDomain(
   };
 }
 
+/**
+ * 把选中的证据整理为带来源标识的上下文文本。
+ *
+ * @param request 当前业务请求。
+ * @param memoryText 为提示词整理的记忆文本。
+ * @returns 整理后的文本或标识。
+ */
 function buildContextText(request: AiWriteDto, memoryText: string): string {
   const context = request.current_context;
   return [
@@ -571,6 +642,16 @@ const SAFE_TASK_INSTRUCTIONS: Record<WriteIntent, string> = {
   expand_text: "保持原意、事实和文风进行扩写，只返回目标文本。",
 };
 
+/**
+ * 把用户问题、检索证据和写作约束组合为模型提示词。
+ *
+ * @param request 当前业务请求。
+ * @param citations 包含来源、原文位置与内容的检索引用。
+ * @param intent intent 参数（WriteIntent）。
+ * @param memoryText 为提示词整理的记忆文本。
+ * @param documentMemoryText 为当前任务整理的文档长期记忆。
+ * @returns 整理后的文本或标识。
+ */
 function buildRagPrompt(
   request: AiWriteDto,
   citations: Citation[],

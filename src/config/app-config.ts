@@ -1,3 +1,6 @@
+/**
+ * @file 应用运行配置。读取环境变量，校验模型和存储配置，并生成可观测的配置摘要。
+ */
 import { Injectable } from '@nestjs/common';
 import { config as loadDotenv } from 'dotenv';
 import { existsSync } from 'node:fs';
@@ -7,6 +10,12 @@ import { createHash } from 'node:crypto';
 import { ModelRouter } from '../ai/model-routing.js';
 
 const configDir = dirname(fileURLToPath(import.meta.url));
+/**
+ * 寻找配置文件所在的项目根目录。
+ *
+ * @param start 区间起始位置。
+ * @returns 整理后的文本或标识。
+ */
 function findProjectRoot(start: string): string {
   let current = start;
   for (let depth = 0; depth < 5; depth += 1) {
@@ -25,12 +34,26 @@ const envFile = process.env.ENV_FILE
   : resolve(projectRoot, '.env');
 if (process.env.NODE_ENV !== 'test') loadDotenv({ path: envFile, override: false });
 
+/**
+ * 将环境变量转换为布尔开关并应用默认值。
+ *
+ * @param name 目标名称。
+ * @param fallback 首选路径不可用时采用的回退值。
+ * @returns 条件是否满足的判断结果。
+ */
 function boolEnv(name: string, fallback: boolean): boolean {
   const value = process.env[name];
   if (value === undefined) return fallback;
   return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
 }
 
+/**
+ * 将逗号分隔的环境变量转换为字符串列表。
+ *
+ * @param name 目标名称。
+ * @param fallback 首选路径不可用时采用的回退值。
+ * @returns 整理后的字符串列表。
+ */
 function csvEnv(name: string, fallback: string): string[] {
   return (process.env[name] ?? fallback)
     .split(',')
@@ -38,6 +61,12 @@ function csvEnv(name: string, fallback: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * 解析对象形式的 JSON 环境变量。
+ *
+ * @param name 目标名称。
+ * @returns Record<string, unknown> 类型的处理结果。
+ */
 function jsonObjectEnv(name: string): Record<string, unknown> {
   const raw = process.env[name]?.trim();
   if (!raw) return {};
@@ -192,6 +221,11 @@ export class AppConfig {
   );
   readonly tokenizerEncoding = process.env.TOKENIZER_ENCODING ?? 'cl100k_base';
 
+  /**
+   * 为配置生成稳定摘要，识别部署设置变化。
+   *
+   * @returns 整理后的文本或标识。
+   */
   get configFingerprint(): string {
     const payload = JSON.stringify({
       collection: this.qdrantCollection,
@@ -228,14 +262,29 @@ export class AppConfig {
     return createHash('sha256').update(payload).digest('hex').slice(0, 16);
   }
 
+  /**
+   * 读取并规范化当前图任务协议版本。
+   *
+   * @returns "v1" | "v2" 类型的处理结果。
+   */
   get agentGraphVersion(): 'v1' | 'v2' {
     return process.env.AGENT_GRAPH_VERSION === 'v1' ? 'v1' : 'v2';
   }
 
+  /**
+   * 列出生产运行所缺少或不兼容的配置。
+   *
+   * @returns 整理后的字符串列表。
+   */
   productionMisconfigurations(): string[] {
     return this.realMisconfigurations();
   }
 
+  /**
+   * 检查真实模型与持久化组件运行所需的配置。
+   *
+   * @returns 整理后的字符串列表。
+   */
   realMisconfigurations(): string[] {
     const requirements: Record<string, boolean> = {
       METADATA_STORE: this.metadataStore === 'mysql',
@@ -271,6 +320,9 @@ export class AppConfig {
       .map(([name]) => name);
   }
 
+  /**
+   * 在服务启动前校验运行模式及必要依赖配置。
+   */
   validateRuntime(): void {
     if (!Number.isInteger(this.agentGraphRetentionDays) || this.agentGraphRetentionDays < 1)
       throw new Error('AGENT_GRAPH_RETENTION_DAYS must be a positive integer');
@@ -285,6 +337,11 @@ export class AppConfig {
     }
   }
 
+  /**
+   * 生成不包含敏感凭据的运行配置摘要。
+   *
+   * @returns Record<string, unknown> 类型的处理结果。
+   */
   summary(): Record<string, unknown> {
     return {
       env_file: this.envFile,

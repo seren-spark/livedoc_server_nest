@@ -1,3 +1,6 @@
+/**
+ * @file 配置模块。向业务服务提供统一的 AppConfig 实例。
+ */
 import { Global, Module } from '@nestjs/common';
 import { AppConfig } from './app-config.js';
 

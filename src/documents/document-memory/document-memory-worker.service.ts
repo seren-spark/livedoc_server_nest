@@ -1,3 +1,6 @@
+/**
+ * @file 文档记忆后台执行。领取提取任务，读取当前版本文档并更新长期记忆。
+ */
 import { Injectable } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import { getEncoding, type Tiktoken } from "js-tiktoken";
@@ -22,6 +25,15 @@ interface MemoryChunk {
 export class DocumentMemoryWorkerService {
   private readonly tokenizer: Tiktoken;
 
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param jobs 后台任务队列服务。
+   * @param profiles DocumentMemoryService 依赖实例。
+   * @param documents 需要筛选或处理的文档集合。
+   * @param llm 共享模型调用服务。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly jobs: DocumentMemoryJobsService,
@@ -34,6 +46,12 @@ export class DocumentMemoryWorkerService {
     );
   }
 
+  /**
+   * 领取并执行一条后台任务；没有可运行任务时直接返回。
+   *
+   * @param workerId 当前执行 Worker 的标识。
+   * @returns 条件是否满足的判断结果。
+   */
   async runOnce(workerId: string): Promise<boolean> {
     //抢任务 + 版本校验
     if (!this.config.documentMemoryEnabled) return false;
@@ -144,6 +162,9 @@ export class DocumentMemoryWorkerService {
 
   /**
    * 把 chunk 按容量打包成 batch，就能让每次 LLM 调用都处理尽可能多的内容，减少请求次数、提高效率
+   *
+   * @param chunks 需要写入或处理的索引分块集合。
+   * @returns 整理后的结果列表。
    */
   private pack(chunks: MemoryChunk[]): MemoryChunk[][] {
     //一批chunk

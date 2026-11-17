@@ -1,3 +1,6 @@
+/**
+ * @file API 启动入口。创建 NestJS/Fastify 应用，配置跨域、校验和服务监听。
+ */
 import 'reflect-metadata';
 import { UnprocessableEntityException, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
@@ -10,6 +13,11 @@ import { AppConfig } from './config/app-config.js';
 import multipart from '@fastify/multipart';
 import { AgentGraphService } from './ai/graph/agent-graph.service.js';
 
+/**
+ * 创建并配置 NestJS 应用，完成启动检查后监听 API 端口。
+ *
+ * @returns 当前步骤的处理结果。
+ */
 export async function bootstrap(): Promise<NestFastifyApplication> {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,

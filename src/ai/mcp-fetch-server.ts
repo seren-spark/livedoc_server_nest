@@ -1,3 +1,6 @@
+/**
+ * @file 网页读取 MCP 服务。向 MCP 客户端暴露受公共地址校验约束的网页读取能力。
+ */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";

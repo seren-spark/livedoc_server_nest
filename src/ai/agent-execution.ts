@@ -1,13 +1,30 @@
+/**
+ * @file Agent 执行控制。统一执行错误、资源预算和阶段耗时，供 Runtime 与图工作流共用。
+ */
 import { HttpException } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import type { AgentUsage, WorkerEnvironment } from "./agent-runtime.types.js";
 
 export class AgentExecutionError extends Error {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param code 错误标识或待解析的代码内容。
+   * @param message 当前消息内容。
+   * @param retryable 该失败是否允许重试。
+   */
   constructor(readonly code: string, message: string, readonly retryable = false) {
     super(message);
   }
 }
 
+/**
+ * 将异常与取消状态转换为前后端统一的 Agent 失败信息。
+ *
+ * @param error 本次操作捕获的异常。
+ * @param signal 取消信号，用于中止请求和后台处理（可选）。
+ * @returns 整理后的状态与操作结果对象。
+ */
 export function agentFailure(error: unknown, signal?: AbortSignal) {
   if (signal?.aborted) {
     const timeout = signal.reason?.name === "TimeoutError";
@@ -32,7 +49,18 @@ export function agentFailure(error: unknown, signal?: AbortSignal) {
   return { code: "AGENT_FAILED", retryable: false };
 }
 
-/** Reserve synchronously before parallel calls; unknown provider usage keeps its reservation charged. */
+/**
+ * 在发起并行模型调用前同步预留额度；用量未知时保留已计入的额度。
+ *
+ *  Reserve synchronously before parallel calls; unknown provider usage keeps its reservation charged.
+ *
+ * @param usage 已使用或待累计的模型与工具用量。
+ * @param promptTokens promptTokens 对应的 Token 数量或预算。
+ * @param maxOutput maxOutput 对应的数量或范围限制。
+ * @param limits 本次执行的资源与时间上限。
+ * @param finalizationReserve 为最终汇总和交付预留的调用额度。
+ * @returns 供后续操作使用的回调或清理函数。
+ */
 export function reserveModelBudget(
   usage: AgentUsage, promptTokens: number, maxOutput: number,
   limits: { tokens: number; requests: number }, finalizationReserve = 0,
@@ -55,7 +83,18 @@ export function reserveModelBudget(
   };
 }
 
-/** Use the run's durable ledger when available, otherwise its in-memory budget. */
+/**
+ * 优先使用持久化任务账本预留 Worker 预算，否则使用内存预算。
+ *
+ *  Use the run's durable ledger when available, otherwise its in-memory budget.
+ *
+ * @param environment 当前 Worker 的身份、预算、能力与事件出口。
+ * @param promptTokens promptTokens 对应的 Token 数量或预算。
+ * @param maxOutput maxOutput 对应的数量或范围限制。
+ * @param limits 本次执行的资源与时间上限。
+ * @param finalizationReserve 为最终汇总和交付预留的调用额度。
+ * @returns 供后续操作使用的回调或清理函数。
+ */
 export async function reserveWorkerModelBudget(
   environment: WorkerEnvironment,
   promptTokens: number,
@@ -82,6 +121,15 @@ export interface AgentSpan {
   error_code?: string;
 }
 
+/**
+ * 记录执行阶段的开始时间，返回用于收尾和记录结果的追踪对象。
+ *
+ * @param environment 当前 Worker 的身份、预算、能力与事件出口。
+ * @param kind 当前结果或来源的分类。
+ * @param name 目标名称。
+ * @param attributes 节点或 DOM 使用的属性。
+ * @returns 整理后的状态与操作结果对象。
+ */
 export function startAgentSpan(environment: WorkerEnvironment, kind: AgentSpan["kind"], name: string,
   attributes: AgentSpan["attributes"] = {}) {
   const start = performance.now();
@@ -93,6 +141,11 @@ export function startAgentSpan(environment: WorkerEnvironment, kind: AgentSpan["
   environment.traces?.push(span);
   return {
     span,
+    /**
+     * 结束当前执行阶段，记录耗时、成功或失败状态与错误码。
+     *
+     * @param error 本次操作捕获的异常（可选）。
+     */
     finish(error?: unknown) {
       span.duration_ms = Math.round(performance.now() - start);
       span.status = error === undefined ? "success" : environment.signal.aborted ? "canceled" : "error";

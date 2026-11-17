@@ -1,3 +1,6 @@
+/**
+ * @file 候选证据核验。检查回答各段的引用支持情况，并在受限次数内提出修订。
+ */
 import { HttpException, Injectable } from "@nestjs/common";
 import { Ajv } from "ajv";
 import { isDeepStrictEqual } from "node:util";
@@ -113,6 +116,12 @@ const schema = {
   },
 };
 
+/**
+ * 将候选内容拆为待逐段核验的结构。
+ *
+ * @param candidate 当前待处理的 Agent 候选结果。
+ * @returns 整理后的结果列表。
+ */
 function parts(candidate: AgentResult): CandidatePart[] {
   if (candidate.kind === "answer")
     return [{ field: "answer", text: candidate.answer, citation_ids: candidate.citation_ids }];
@@ -125,6 +134,13 @@ function parts(candidate: AgentResult): CandidatePart[] {
   throw new Error("当前候选类型不能进行证据核验");
 }
 
+/**
+ * 比较候选片段是否仍对应同一段内容。
+ *
+ * @param part 切分后的内容片段。
+ * @param location 引用或候选片段在原文中的位置信息。
+ * @returns 条件是否满足的判断结果。
+ */
 function samePart(part: CandidatePart, location: ClaimLocation): boolean {
   return part.field === location.field && part.edit_id === location.edit_id;
 }
@@ -134,10 +150,23 @@ const STRUCTURE_HEADINGS = new Set([
   "总结", "结论", "参考资料", "参考文献", "行动项", "会议纪要", "技术文章", "资料对比", "附录",
 ]);
 
+/**
+ * 提取片段所属的标题说明，辅助定位核验问题。
+ *
+ * @param node 当前语法树或编辑器节点。
+ * @returns 整理后的文本或标识。
+ */
 function headingLabel(node: MarkdownNode): string {
   return (node.children ?? []).map((child) => child.value ?? headingLabel(child)).join("").trim();
 }
 
+/**
+ * 找出候选中必须提供证据支持的内容片段。
+ *
+ * @param input 本次操作的输入数据。
+ * @param candidateParts 从候选结果拆出的待核验片段。
+ * @returns 整理后的结果列表。
+ */
 function requiredSegments(input: VerificationInput, candidateParts: CandidatePart[]) {
   const scope = input.request.knowledge_scope;
   const hasSources = input.evidence.length > 0 || input.request.references.length > 0 || Boolean(
@@ -150,6 +179,11 @@ function requiredSegments(input: VerificationInput, candidateParts: CandidatePar
       text: string;
       inline_citation_required?: false;
     }> = [];
+    /**
+     * 遍历候选结构，提取需要证据支持的正文片段。
+     *
+     * @param node 当前语法树或编辑器节点。
+     */
     const visit = (node: MarkdownNode) => {
       if (["thematicBreak", "definition"].includes(node.type)) return;
       if (node.type === "heading" && STRUCTURE_HEADINGS.has(headingLabel(node).replace(/^\d+[.、]\s*/u, ""))) return;
@@ -175,6 +209,13 @@ function requiredSegments(input: VerificationInput, candidateParts: CandidatePar
 export class EvidenceVerificationService {
   private readonly valid = new Ajv({ strict: false }).compile(schema);
 
+  /**
+   * 执行候选证据核验并返回结构化报告。
+   *
+   * @param input 本次操作的输入数据。
+   * @param turn 执行模型调用的回调或当前问答轮次。
+   * @returns 候选证据核验报告。
+   */
   async verify(input: VerificationInput, turn: VerificationTurn): Promise<VerificationReport> {
     if (!input.batch_chars || ['plan', 'clarification'].includes(input.candidate.kind)) return this.verifySegments(input, turn);
     try {
@@ -207,6 +248,14 @@ export class EvidenceVerificationService {
     } catch (error) { this.unavailable(error, input.signal); }
   }
 
+  /**
+   * 逐段检查陈述与可用证据的支持关系。
+   *
+   * @param input 本次操作的输入数据。
+   * @param turn 执行模型调用的回调或当前问答轮次。
+   * @param selected 当前选中的条目（可选）。
+   * @returns 候选证据核验报告。
+   */
   private async verifySegments(input: VerificationInput, turn: VerificationTurn, selected?: ReturnType<typeof requiredSegments>): Promise<VerificationReport> {
     try {
       input.signal?.throwIfAborted();
@@ -260,6 +309,14 @@ export class EvidenceVerificationService {
     }
   }
 
+  /**
+   * 依据对应版本的核验报告修订候选，并保留原有输出目标。
+   *
+   * @param input 本次操作的输入数据。
+   * @param report 当前候选对应的核验或审阅报告。
+   * @param turn 执行模型调用的回调或当前问答轮次。
+   * @returns 经过整理的 Agent 候选结果。
+   */
   async repair(input: VerificationInput, report: VerificationReport, turn: VerificationTurn): Promise<AgentResult> {
     try {
       input.signal?.throwIfAborted();
@@ -288,6 +345,12 @@ export class EvidenceVerificationService {
     }
   }
 
+  /**
+   * 筛出本次核验实际可使用的引用和证据。
+   *
+   * @param input 本次操作的输入数据。
+   * @returns Agent 引用来源列表；未找到或不可用时可能为空。
+   */
   private availableEvidence(input: VerificationInput) {
     if (!Number.isSafeInteger(input.candidate_version) || input.candidate_version < 0)
       throw new Error("候选版本无效");
@@ -303,6 +366,15 @@ export class EvidenceVerificationService {
     });
   }
 
+  /**
+   * 整理核验结论、问题片段和覆盖情况。
+   *
+   * @param input 本次操作的输入数据。
+   * @param value 待校验或转换的值。
+   * @param candidateParts 从候选结果拆出的待核验片段。
+   * @param segments segments 参数（ReturnType<typeof requiredSegments>）。
+   * @returns 候选证据核验报告。
+   */
   private report(
     input: VerificationInput,
     value: unknown,
@@ -383,18 +455,36 @@ export class EvidenceVerificationService {
     return { ...report, recovery, passed: problems.length === 0 };
   }
 
+  /**
+   * 保留修订前的输出目标，避免修订改变候选的交付类型或位置。
+   *
+   * @param original 当前待处理的 Agent 候选结果。
+   * @param revised 当前待处理的 Agent 候选结果。
+   */
   private preserveTarget(original: AgentResult, revised: AgentResult) {
     if (original.kind !== revised.kind) throw new Error("修复改变了结果类型");
     if (original.kind === "document" && revised.kind === "document" &&
       (original.document_id !== revised.document_id || original.category_id !== revised.category_id))
       throw new Error("修复改变了目标文稿");
     if (original.kind === "edits" && revised.kind === "edits") {
+      /**
+       * 提取候选需要核验或保护的目标区域。
+       *
+       * @param candidate 需要校验或修订的写作候选。
+       * @returns 整理后的结果列表。
+       */
       const targets = (candidate: typeof original) => candidate.edits.map(({ id, operation, target }) => ({ id, operation, target }));
       if (!isDeepStrictEqual(targets(original), targets(revised)))
         throw new Error("修复改变了编辑标识或范围");
     }
   }
 
+  /**
+   * 将当前阶段不可用的原因转换为明确错误。
+   *
+   * @param error 本次操作捕获的异常。
+   * @param signal 取消信号，用于中止请求和后台处理（可选）。
+   */
   private unavailable(error: unknown, signal?: AbortSignal): never {
     if (signal?.aborted) throw error;
     if (error instanceof AgentExecutionError && [

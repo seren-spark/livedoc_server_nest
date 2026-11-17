@@ -1,3 +1,6 @@
+/**
+ * @file 检索追踪存储。保存检索链路、生成结果与用户反馈，并按访问范围查询。
+ */
 import type { FeedbackAction } from '../common/types.js';
 import { DatabaseService } from '../database/database.service.js';
 
@@ -38,8 +41,18 @@ const TRACE_COLUMNS = `trace_id,user_id,space_id,entrypoint,query_text,mode,tool
   model_name,collection_name,payload,error,created_at,completed_at`;
 
 export class ObservabilityRepository {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param database 共享数据库服务。
+   */
   constructor(private readonly database: DatabaseService) {}
 
+  /**
+   * 保存一条检索追踪记录。
+   *
+   * @param record 待处理的业务记录。
+   */
   async insertTrace(record: TraceRecord): Promise<void> {
     await this.database.query(
       `INSERT INTO rag_traces
@@ -63,6 +76,15 @@ export class ObservabilityRepository {
     );
   }
 
+  /**
+   * 为已有检索追踪补记生成状态、耗时和证据使用情况。
+   *
+   * @param traceId 检索追踪标识。
+   * @param toolName 当前工具的名称。
+   * @param hasEvidence 当前结果是否具有可使用的引用依据。
+   * @param generationMs 模型生成耗时，单位为毫秒。
+   * @param error 本次操作捕获的异常。
+   */
   async complete(
     traceId: string,
     toolName: string,
@@ -84,6 +106,12 @@ export class ObservabilityRepository {
     );
   }
 
+  /**
+   * 保存用户对生成结果的反馈。
+   *
+   * @param eventId event 对应的唯一标识。
+   * @param record 待处理的业务记录。
+   */
   async insertFeedback(eventId: string, record: FeedbackRecord): Promise<void> {
     await this.database.transaction(async (manager) => {
       await manager.query(
@@ -111,6 +139,14 @@ export class ObservabilityRepository {
     });
   }
 
+  /**
+   * 在指定用户和空间范围内查询单条追踪。
+   *
+   * @param traceId 检索追踪标识。
+   * @param userId 当前用户标识。
+   * @param spaceId space 对应的唯一标识。
+   * @returns TraceRecord 类型的处理结果；未找到或不可用时可能为空。
+   */
   async findScoped(traceId: string, userId: string, spaceId: string): Promise<TraceRecord | null> {
     const rows = await this.database.query<Record<string, unknown>>(
       `SELECT ${TRACE_COLUMNS} FROM rag_traces
@@ -120,6 +156,14 @@ export class ObservabilityRepository {
     return rows[0] ? mapTrace(rows[0]) : null;
   }
 
+  /**
+   * 在指定用户和空间范围内查询追踪列表。
+   *
+   * @param spaceId space 对应的唯一标识。
+   * @param from 编辑区间的起始位置。
+   * @param userId 当前用户标识（可选）。
+   * @returns 整理后的结果列表。
+   */
   async listScoped(
     spaceId: string,
     from: Date,
@@ -136,6 +180,12 @@ export class ObservabilityRepository {
   }
 }
 
+/**
+ * 将数据库记录还原为检索追踪对象。
+ *
+ * @param row 数据库查询返回的一行数据。
+ * @returns TraceRecord 类型的处理结果。
+ */
 function mapTrace(row: Record<string, unknown>): TraceRecord {
   return {
     trace_id: String(row.trace_id),

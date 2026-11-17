@@ -1,3 +1,6 @@
+/**
+ * @file 研究写作提示词。按协议版本提供资料压缩、研究提纲和审阅等阶段的提示词。
+ */
 /** Retain released prompt versions while their runs can still resume. */
 export const RESEARCH_PROMPT_VERSION = 'research-writing-1';
 export const RESEARCH_PROMPTS = Object.freeze({

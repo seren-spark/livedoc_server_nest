@@ -1,3 +1,6 @@
+/**
+ * @file 检索重排。调用交叉编码器重排候选证据，必要时结合字段匹配和来源质量评分。
+ */
 import { Injectable } from '@nestjs/common';
 import { AppConfig } from '../config/app-config.js';
 import type { SearchHit } from '../retrieval/vector-store.service.js';
@@ -7,6 +10,12 @@ import { InferenceWorkerService } from './inference-worker.service.js';
 
 @Injectable()
 export class RerankerService {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param worker InferenceWorkerService 依赖实例。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly worker: InferenceWorkerService,
@@ -59,6 +68,12 @@ export class RerankerService {
   }
 }
 
+/**
+ * 把标题、章节路径和正文组合为重排模型的输入。
+ *
+ * @param payload 需要传递或持久化的业务数据。
+ * @returns 整理后的文本或标识。
+ */
 export function buildPassage(payload: Record<string, any>): string {
   return [
     `title: ${payload.title ?? ''}`,
@@ -68,6 +83,13 @@ export function buildPassage(payload: Record<string, any>): string {
   ].join('\n');
 }
 
+/**
+ * 根据查询词在标题与正文等字段的匹配情况计算辅助分。
+ *
+ * @param queryTerms 原问题分词后得到的检索词项。
+ * @param payload 需要传递或持久化的业务数据。
+ * @returns 计算得到的数值。
+ */
 function fieldMatchScore(queryTerms: string[], payload: Record<string, any>): number {
   if (!queryTerms.length) return 0;
   const title = String(payload.title ?? '').toLowerCase();
@@ -83,6 +105,12 @@ function fieldMatchScore(queryTerms: string[], payload: Record<string, any>): nu
   return Math.min(score / queryTerms.length, 1);
 }
 
+/**
+ * 根据来源元数据计算重排使用的质量辅助分。
+ *
+ * @param payload 需要传递或持久化的业务数据。
+ * @returns 计算得到的数值。
+ */
 function sourceQualityScore(payload: Record<string, any>): number {
   if (payload.visibility === 'private') return 1;
   return ['article', 'public_article'].includes(payload.source_type) ? 0.8 : 0.6;

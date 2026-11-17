@@ -1,3 +1,6 @@
+/**
+ * @file Wiki 表结构。声明知识候选、来源关系与知识页面所需的数据表。
+ */
 export const WIKI_SCHEMA = `CREATE TABLE IF NOT EXISTS wiki_pages (
   wiki_id VARCHAR(64) PRIMARY KEY,
   space_id VARCHAR(128) NOT NULL, owner_id VARCHAR(128) NOT NULL,

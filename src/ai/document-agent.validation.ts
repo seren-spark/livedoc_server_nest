@@ -1,8 +1,18 @@
+/**
+ * @file Agent 确定性校验。检查请求、计划和模型输出，限制 Markdown 结构与编辑目标。
+ */
 import { BadRequestException } from "@nestjs/common";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import type { DocumentAgentDto } from "./document-agent.dto.js";
 import type { AgentCitation, AgentResult, ExecutionPlan } from "./document-agent.types.js";
 
+/**
+ * 从候选实际引用的标识中选出可展示的来源，剔除未使用引用。
+ *
+ * @param result 当前待处理的 Agent 候选结果。
+ * @param available 本次仍可使用的候选或额度。
+ * @returns Agent 引用来源列表。
+ */
 export function selectAgentCitations(result: AgentResult, available: Map<string, AgentCitation>): AgentCitation[] {
   const ids = result.kind === "answer" || result.kind === "document"
     ? result.citation_ids
@@ -14,6 +24,12 @@ export function selectAgentCitations(result: AgentResult, available: Map<string,
   });
 }
 
+/**
+ * 解析模型返回的 JSON，处理模型可能附带的代码围栏。
+ *
+ * @param text 待处理的文本。
+ * @returns 本次操作整理后的结果。
+ */
 export function parseModelJson(text: string): any {
   return JSON.parse(
     text
@@ -22,8 +38,20 @@ export function parseModelJson(text: string): any {
       .replace(/\s*```$/, ""),
   );
 }
+/**
+ * 根据工具调用上限计算可支持的计划步数。
+ *
+ * @param maxTurns maxTurns 对应的数量或范围限制。
+ * @returns 计算得到的数值。
+ */
 export const maxAgentPlanSteps = (maxTurns: number) => Math.min(5, Math.max(0, Math.floor((maxTurns - 4) / 3)));
 
+/**
+ * 检查计划目标、步骤、依赖和能力声明是否符合执行协议。
+ *
+ * @param value 待校验或转换的值。
+ * @returns 可执行的任务计划。
+ */
 export function validatePlan(value: any): ExecutionPlan {
   if (
     !value ||
@@ -65,6 +93,11 @@ export function validatePlan(value: any): ExecutionPlan {
   }
   return value;
 }
+/**
+ * 检查请求、编辑器快照和引用资料的业务约束。
+ *
+ * @param request 包含写作需求、编辑器快照和参考资料的 Agent 请求。
+ */
 export function validateAgentRequest(request: DocumentAgentDto) {
   const snapshot = request.editor_snapshot;
   if (
@@ -161,9 +194,19 @@ export function validateAgentRequest(request: DocumentAgentDto) {
   }
   if (request.confirmed_plan) validatePlan(request.confirmed_plan);
 }
+/**
+ * 检查候选 Markdown 的结构和允许使用的格式。
+ *
+ * @param value 待校验或转换的值。
+ */
 export function validateAgentMarkdown(value: unknown) {
   if (typeof value !== "string" || !value.trim() || value.length > 200000)
     throw new BadRequestException("生成内容包含不允许的格式或新图片");
+  /**
+   * 遍历候选 Markdown 节点，拒绝不允许的 HTML、图片与链接内容。
+   *
+   * @param node 当前语法树或编辑器节点。
+   */
   const visit = (node: any) => {
     if (["image", "imageReference", "html"].includes(node.type))
       throw new BadRequestException("不支持原始 HTML 或新增图片，请将代码放入代码块");
@@ -179,6 +222,14 @@ export function validateAgentMarkdown(value: unknown) {
   visit(fromMarkdown(value));
 }
 
+/**
+ * 检查结果类型、编辑目标与读取状态，阻止无效候选交付。
+ *
+ * @param result 当前步骤或模型返回的结果。
+ * @param request 包含写作需求、编辑器快照和参考资料的 Agent 请求。
+ * @param citationIds citation 对应的标识集合。
+ * @returns 通过业务约束检查的规范化候选。
+ */
 export function validateAgentResult(
   result: any,
   request: DocumentAgentDto,
@@ -186,6 +237,11 @@ export function validateAgentResult(
 ): AgentResult {
   if (!result || typeof result.kind !== "string")
     throw new BadRequestException("结果缺少类型");
+  /**
+   * 检查候选中声明的引用标识，并返回规范化引用列表。
+   *
+   * @param ids 本次操作涉及的记录标识集合。
+   */
   const citations = (ids: any) => {
     if (
       !Array.isArray(ids) ||

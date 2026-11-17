@@ -1,3 +1,6 @@
+/**
+ * @file 后端 Jest 配置：设置 ESM TypeScript 转换、测试目录与覆盖率采集范围。
+ */
 /** @type {import('jest').Config} */
 module.exports = {
   preset: 'ts-jest/presets/default-esm',

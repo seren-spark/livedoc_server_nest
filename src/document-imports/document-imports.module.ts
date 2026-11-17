@@ -1,3 +1,6 @@
+/**
+ * @file 文档导入模块。组装导入任务、解析器、视觉分析和资源依赖。
+ */
 import { MemoryModule } from '../ai/memory.module.js';
 import { forwardRef, Module } from '@nestjs/common';
 import { DocumentsModule } from '../documents/documents.module.js';

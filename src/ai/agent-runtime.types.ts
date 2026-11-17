@@ -1,3 +1,6 @@
+/**
+ * @file Worker 执行协议。定义 Worker 输入输出、共享预算、取消信号和运行环境。
+ */
 import type { AccessContext } from "../common/types.js";
 import type { DocumentAgentDto } from "./document-agent.dto.js";
 import type {
@@ -28,6 +31,11 @@ export interface AgentUsage {
   reserved_tokens?: number;
   estimated_requests?: number;
 }
+/**
+ * 创建本次执行的初始资源用量计数。
+ *
+ * @returns 模型和工具调用用量。
+ */
 export const emptyUsage = (): AgentUsage => ({
   execution_turns: 0,
   model_requests: 0,
@@ -120,15 +128,28 @@ export interface WorkerOutput {
 }
 
 // Cancellation detaches the caller; non-cancelable work may still settle later.
+/**
+ * 在取消时结束调用方等待；无法取消的底层工作仍可能自行结束。
+ *
+ * @param work 需要在受控上下文中执行的异步操作。
+ * @param signal 取消信号，用于中止请求和后台处理。
+ * @returns T 类型的处理结果。
+ */
 export function withAbort<T>(
   work: Promise<T>,
   signal: AbortSignal,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
+    /**
+     * 响应取消信号，中止当前等待或操作。
+     */
     const abort = () => {
       signal.removeEventListener("abort", abort);
       reject(signal.reason ?? new Error("任务已停止"));
     };
+    /**
+     * 清理已结束或过期操作留下的资源。
+     */
     const cleanup = () => signal.removeEventListener("abort", abort);
     work.then(
       (value) => {

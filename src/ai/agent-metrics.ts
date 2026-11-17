@@ -1,3 +1,6 @@
+/**
+ * @file Agent 指标。聚合任务成功率、工具耗时和资源使用情况。
+ */
 import type { AgentRunRecord } from './agent-audit.service.js';
 import type { AgentSpan } from './agent-execution.js';
 
@@ -8,13 +11,27 @@ export interface AgentMetricRun extends AgentRunRecord {
   budget?: Record<string, number> | null;
 }
 
+/**
+ * 从样本分布中计算指定分位数。
+ *
+ * @param values 待转换或去重的值集合。
+ * @param fraction 需要截取或统计的比例。
+ * @returns 计算得到的数值；未找到或不可用时可能为空。
+ */
 function percentile(values: number[], fraction: number): number | null {
   if (!values.length) return null;
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.ceil(sorted.length * fraction) - 1]!;
 }
 
-/** Execution delivery and user acceptance have separate denominators. */
+/**
+ * 分别汇总任务交付和用户采纳指标，按各自适用样本计算比例。
+ *
+ *  Execution delivery and user acceptance have separate denominators.
+ *
+ * @param runs 参与统计的任务运行集合。
+ * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+ */
 export function summarizeAgentRuns(runs: AgentMetricRun[]) {
   const delivered = runs.filter((run) => ['completed', 'awaiting_review'].includes(run.status) && Boolean(run.payload.delivery?.result));
   const terminal = runs.filter((run) => ['completed', 'awaiting_review', 'failed', 'stopped'].includes(run.status));

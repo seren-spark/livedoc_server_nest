@@ -1,3 +1,6 @@
+/**
+ * @file Docling 解析适配。调用文档解析进程，将上传文件转换为 Markdown 与资源信息。
+ */
 import { Injectable } from '@nestjs/common';
 import { execFile } from 'node:child_process';
 import { readFile, rm } from 'node:fs/promises';
@@ -11,8 +14,20 @@ const execFileAsync = promisify(execFile);
 
 @Injectable()
 export class DoclingParserService {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   */
   constructor(private readonly config: AppConfig) {}
 
+  /**
+   * 调用 Docling 解析上传文件，读取生成的 Markdown 与图片资源。
+   *
+   * @param path 目标文件路径或节点层级路径。
+   * @param filename 上传文件的原始名称。
+   * @returns ParsedDocument 类型的处理结果。
+   */
   async parse(path: string, filename: string): Promise<ParsedDocument> {
     const output = resolve('data', 'tmp', `docling-${randomUUID()}.json`);
     try {

@@ -1,3 +1,6 @@
+/**
+ * @file 图任务运行管理。协调任务领取、后台执行、访问校验和运行状态查询。
+ */
 import {
   Injectable,
   OnModuleDestroy,
@@ -30,6 +33,13 @@ import { MySqlCheckpointSaver } from "./mysql-checkpoint-saver.js";
 import { graphFingerprint, supportedPolicy } from './graph-policy.js';
 import { activeStepOutputs, type StepOutputs } from '../step-versions.js';
 
+/**
+ * 从已保存产物中提取可展示的步骤进度。
+ *
+ * @param run 当前 Agent 运行记录。
+ * @param state 当前业务或插件状态。
+ * @returns 整理后的字符串列表。
+ */
 function progressOutputs(run: GraphRun, state: Record<string, any> | undefined): string[] {
   if (run.graph_version === 'v1') return Object.values(state?.outputs ?? {});
   return Object.values(activeStepOutputs(state?.steps ?? [], state?.outputs as StepOutputs ?? {},
@@ -46,6 +56,19 @@ export class AgentGraphService implements OnModuleDestroy {
     string,
     { control: RunControl; abort: AbortController; promise: Promise<void> }
   >();
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param repository AgentRunRepository 依赖实例。
+   * @param workflow 已经构建的图工作流实例。
+   * @param document 当前知识文档记录。
+   * @param supervisor AgentSupervisorService 依赖实例。
+   * @param auth AuthService 依赖实例。
+   * @param config 应用运行配置。
+   * @param llm 共享模型调用服务。
+   * @param wiki WikiService 依赖实例。
+   * @param audit AgentAuditService 依赖实例。
+   */
   constructor(
     readonly repository: AgentRunRepository,
     private readonly workflow: AgentGraphWorkflow,
@@ -58,6 +81,9 @@ export class AgentGraphService implements OnModuleDestroy {
     private readonly audit: AgentAuditService,
   ) {}
 
+  /**
+   * 启动图任务后台领取定时器。
+   */
   start() {
     if (!this.repository.db.metadataEnabled || this.timer) return;
     this.timer = setInterval(
@@ -70,6 +96,9 @@ export class AgentGraphService implements OnModuleDestroy {
     this.timer.unref();
   }
 
+  /**
+   * 在并发上限内领取任务并启动执行，同时定期清理过期记录。
+   */
   async tick() {
     if (this.ticking || this.closed || !this.repository.db.metadataEnabled)
       return;
@@ -93,6 +122,13 @@ export class AgentGraphService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * 检查请求幂等性、编辑身份和模型配置，持久化新图任务。
+   *
+   * @param input 包含写作需求、编辑器快照和参考资料的 Agent 请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 模型和工具调用用量。
+   */
   async create(input: DocumentAgentDto, context: AccessContext) {
     this.repository.assertEnabled();
     if (!this.llm.isConfigured)
@@ -111,6 +147,13 @@ export class AgentGraphService implements OnModuleDestroy {
     return this.publicRun(run);
   }
 
+  /**
+   * 裁剪内部任务数据，生成前端可读取的运行状态。
+   *
+   * @param run 当前 Agent 运行记录。
+   * @param includeWaiting 是否包含等待用户输入的任务。
+   * @returns 模型和工具调用用量。
+   */
   publicRun(run: GraphRun, includeWaiting = false) {
     return {
       run_id: run.run_id,
@@ -147,6 +190,13 @@ export class AgentGraphService implements OnModuleDestroy {
     };
   }
 
+  /**
+   * 读取任务公开状态；等待输入时再次检查是否仍允许恢复。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 模型和工具调用用量。
+   */
   async get(id: string, context: AccessContext) {
     const run = await this.repository.get(id, context);
     if (run.status === "waiting_input") {
@@ -171,6 +221,16 @@ export class AgentGraphService implements OnModuleDestroy {
     }
     return this.publicRun(run, true);
   }
+  /**
+   * 校验来源权限后分页返回研究说明、笔记和覆盖信息。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param question 需要回答或继续检索的问题。
+   * @param offset 从原文或分页数据的哪个位置开始读取。
+   * @param limit 本次读取或处理的数量上限。
+   * @returns 整理后的状态与操作结果对象；未找到或不可用时可能为空。
+   */
   async research(id: string, context: AccessContext, question: string | undefined, offset: number, limit: number) {
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 20)
       throw new BadRequestException('研究明细分页参数无效');
@@ -193,6 +253,12 @@ export class AgentGraphService implements OnModuleDestroy {
     return { brief, coverage, notes: notes.slice(offset, offset + limit), total: notes.length,
       next_offset: offset + limit < notes.length ? offset + limit : null };
   }
+  /**
+   * 在展示或恢复研究进度前，重新检查关联资料的权限。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   */
   async authorizeProgress(id: string, context: AccessContext) {
     const current = await this.auth.identityByUserId(context.user_id);
     if (!current || current.space_id !== context.space_id)
@@ -213,6 +279,14 @@ export class AgentGraphService implements OnModuleDestroy {
       );
     }
   }
+  /**
+   * 按查询条件读取图任务列表。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param conversation 用于筛选任务的会话标识（可选）。
+   * @param key 查询或存储使用的键（可选）。
+   * @returns 模型和工具调用用量列表。
+   */
   async list(context: AccessContext, conversation?: string, key?: string) {
     if (!this.repository.db.metadataEnabled) return [];
     return (await this.repository.list(context, conversation, key)).map((r) =>
@@ -220,6 +294,15 @@ export class AgentGraphService implements OnModuleDestroy {
     );
   }
 
+  /**
+   * 处理暂停、继续或停止指令，并更新任务控制状态。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param command 本次图任务控制命令。
+   * @param kind 当前结果或来源的分类。
+   * @returns 模型和工具调用用量。
+   */
   async command(
     id: string,
     context: AccessContext,
@@ -264,6 +347,13 @@ export class AgentGraphService implements OnModuleDestroy {
     return this.publicRun(run);
   }
 
+  /**
+   * 为领取的任务维持租约和累计预算，执行图工作流并写回终态。
+   *
+   * @param run 当前 Agent 运行记录。
+   * @param control 当前任务的控制输入。
+   * @param abort 控制当前操作取消的对象或回调。
+   */
   private async execute(
     run: GraphRun,
     control: RunControl,
@@ -416,6 +506,12 @@ export class AgentGraphService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * 检查当前配置与已保存任务的运行条件是否兼容。
+   *
+   * @param run 当前 Agent 运行记录。
+   * @returns 条件是否满足的判断结果。
+   */
   private compatible(run: GraphRun) {
     return (
       ['v1', 'v2'].includes(run.graph_version) &&
@@ -426,6 +522,9 @@ export class AgentGraphService implements OnModuleDestroy {
     );
   }
 
+  /**
+   * 在模块关闭时停止后台工作并释放连接与资源。
+   */
   async onModuleDestroy() {
     this.closed = true;
     if (this.timer) clearInterval(this.timer);

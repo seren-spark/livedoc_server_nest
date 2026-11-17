@@ -1,3 +1,6 @@
+/**
+ * @file 索引后台执行。领取任务，分块并向量化文档，完成后激活当前版本的检索索引。
+ */
 import { Injectable, Optional } from '@nestjs/common';
 import { ArticleRepository } from '../articles/article.repository.js';
 import type { IndexJobRecord } from './index-job.types.js';
@@ -9,6 +12,16 @@ import { AppConfig } from '../config/app-config.js';
 
 @Injectable()
 export class IndexWorkerService {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param jobs 后台任务队列服务。
+   * @param documents 需要筛选或处理的文档集合。
+   * @param retrieval 共享知识检索服务。
+   * @param store VectorStoreService 依赖实例。
+   * @param config 应用运行配置。
+   * @param articleDrafts ArticleRepository 依赖实例（可选）。
+   */
   constructor(
     private readonly jobs: IndexJobsService,
     private readonly documents: DocumentsService,
@@ -21,6 +34,8 @@ export class IndexWorkerService {
    * 索引工作线程一次运行
    * @param workerId 工作线程 ID
    * @returns 索引任务记录
+   *
+   * @param targetJobId targetJob 对应的唯一标识（可选）。
    */
   async runOnce(workerId: string, targetJobId?: string): Promise<IndexJobRecord | null> {
     //抢占任务， 调用 claimNext 从 index_jobs 表抢一个任务。
@@ -71,6 +86,11 @@ export class IndexWorkerService {
         return this.jobs.get(job.job_id);
       }
       //两次检查都通过，正式把该版本的 points 标记为 is_active=true ，同时让旧版本 points 失活。
+      /**
+       * 两次检查都通过，正式把该版本的 points 标记为 is_active=true ，同时让旧版本 points 失活。
+       *
+       * @param manager 当前数据库事务执行器（可选）。
+       */
       const activate = async (manager?: import('typeorm').EntityManager) => {
         await this.store.activateDocumentVersion(job.doc_id, job.document_version);
         await this.documents.markReady(job.doc_id, chunkCount, job.document_version,manager);
@@ -107,6 +127,12 @@ export class IndexWorkerService {
   }
 }
 
+/**
+ * 整理 Worker 异常，生成可保存的失败说明。
+ *
+ * @param error 本次操作捕获的异常。
+ * @returns 整理后的文本或标识。
+ */
 function describeWorkerError(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
   const apiError = error as Error & {

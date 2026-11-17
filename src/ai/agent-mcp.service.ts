@@ -1,3 +1,6 @@
+/**
+ * @file MCP 工具连接。管理外部 MCP 客户端，将受配置限制的工具接入 Agent。
+ */
 import { Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
@@ -19,7 +22,15 @@ export class AgentMcpService implements OnModuleInit, OnModuleDestroy {
     { schema: FunctionTool; server: string; name: string; research?: boolean }
   >();
   readonly unavailable: string[] = [];
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   */
   constructor(private readonly config: AppConfig) {}
+  /**
+   * 在 NestJS 模块启动时初始化所需资源。
+   */
   async onModuleInit() {
     if (!this.config.mcpEnabled) return;
     const compiled = resolve(
@@ -52,6 +63,12 @@ export class AgentMcpService implements OnModuleInit, OnModuleDestroy {
       )
         continue;
       const env: Record<string, string> = {};
+      /**
+       * 将配置字符串中的环境变量占位符替换为实际值。
+       *
+       * @param value 待校验或转换的值。
+       * @returns 整理后的文本或标识。
+       */
       const expand = (value: unknown) =>
         String(value).replace(
           /\$\{([^}]+)\}/g,
@@ -138,6 +155,14 @@ export class AgentMcpService implements OnModuleInit, OnModuleDestroy {
       }
     }
   }
+  /**
+   * 检查工具是否启用及网页目标是否合法，再调用对应 MCP 服务。
+   *
+   * @param id 目标记录的唯一标识。
+   * @param args 当前工具调用的参数。
+   * @param signal 取消信号，用于中止请求和后台处理。
+   * @returns 整理后的文本或标识。
+   */
   async call(id: string, args: Record<string, any>, signal: AbortSignal) {
     signal.throwIfAborted();
     const tool = this.tools.get(id);
@@ -162,6 +187,9 @@ export class AgentMcpService implements OnModuleInit, OnModuleDestroy {
       .join("\n");
     return content;
   }
+  /**
+   * 在模块关闭时停止后台工作并释放连接与资源。
+   */
   async onModuleDestroy() {
     await Promise.allSettled([...this.clients.values()].map((c) => c.close()));
   }

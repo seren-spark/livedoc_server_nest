@@ -1,3 +1,6 @@
+/**
+ * @file 研究写作协议。校验研究任务与笔记，计算资料覆盖度并合并恢复进度。
+ */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { AgentResult, AgentCitation } from './document-agent.types.js';
@@ -12,6 +15,12 @@ export const briefSchema = z.object({
   sections: z.array(z.object({ id, title: text, question_ids: z.array(id).min(1).max(20) }).strict()).min(1).max(12),
 }).strict();
 export type ResearchBrief = z.infer<typeof briefSchema>;
+/**
+ * 校验研究任务说明的目标、范围和验收字段。
+ *
+ * @param value 待校验或转换的值。
+ * @returns 结构化研究任务说明及其验收要求。
+ */
 export function validateBrief(value: unknown): ResearchBrief {
   const brief = briefSchema.parse(value);
   const questions = new Map(brief.questions.map(q => [q.id, q]));
@@ -25,6 +34,15 @@ export function validateBrief(value: unknown): ResearchBrief {
 }
 
 export type ResearchNote = { question_id: string; findings: WorkerHandoff['findings']; missing: string[]; conflicts: WorkerHandoff['conflicts'] };
+/**
+ * 检查研究笔记的来源、发现与证据结构。
+ *
+ * @param value 待校验或转换的值。
+ * @param brief 本次研究任务的目标与验收说明。
+ * @param adopted 已经采纳的证据或结果。
+ * @param observations 工具执行后收集的观察结果。
+ * @returns 整理后的结果列表。
+ */
 export function validateResearchNotes(value: unknown, brief: ResearchBrief, adopted: string[], observations: Array<{ citation_id: string; content: string }>): ResearchNote[] {
   const notes = z.array(z.object({ question_id: id,
     findings: z.array(z.object({ statement: text, evidence_ids: z.array(id).min(1).max(20) }).strict()).max(40),
@@ -39,9 +57,34 @@ export function validateResearchNotes(value: unknown, brief: ResearchBrief, adop
 }
 
 export type ResearchProgress = { searches: number; consecutive_empty: number; seen_queries: string[]; evidence_hashes: string[]; stop_reason?: string };
+/**
+ * 创建尚未开始研究时的进度结构。
+ *
+ * @returns ResearchProgress 类型的处理结果。
+ */
 export const emptyResearchProgress = (): ResearchProgress => ({ searches: 0, consecutive_empty: 0, seen_queries: [], evidence_hashes: [] });
+/**
+ * 识别工具调用是否属于研究资料检索。
+ *
+ * @param name 目标名称。
+ * @returns 条件是否满足的判断结果。
+ */
 export const isResearchSearch = (name: string) => ['search_knowledge_base', 'search_web', 'personal_tavily_search'].includes(name) || name.startsWith('mcp__') && /search/iu.test(name);
+/**
+ * 对内容生成稳定摘要，用于版本比对与去重。
+ *
+ * @param value 待校验或转换的值。
+ * @returns 整理后的文本或标识。
+ */
 export const contentHash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+/**
+ * 登记一次研究检索的开始状态。
+ *
+ * @param progress progress 参数（ResearchProgress）。
+ * @param name 目标名称。
+ * @param args 当前工具调用的参数。
+ * @param brief 本次研究任务的目标与验收说明。
+ */
 export function researchSearchStart(progress: ResearchProgress, name: string, args: any, brief: ResearchBrief) {
   if (progress.stop_reason || progress.searches >= 3) throw new Error('本研究步骤已停止搜索，请提交已知发现与缺口');
   if (!brief.questions.some(q => q.id === args.question_id) || typeof args.gap_reason !== 'string' || !args.gap_reason.trim())
@@ -50,6 +93,14 @@ export function researchSearchStart(progress: ResearchProgress, name: string, ar
   if (progress.seen_queries.includes(key)) { progress.stop_reason = 'repeated_query'; throw new Error('重复查询已停止，请交付研究结果'); }
   progress.seen_queries.push(key); progress.searches++;
 }
+/**
+ * 登记研究检索的结果及覆盖变化。
+ *
+ * @param progress progress 参数（ResearchProgress）。
+ * @param observations 工具执行后收集的观察结果。
+ * @param citations 本次实际可用的引用证据集合。
+ * @returns 计算得到的数值。
+ */
 export function researchSearchEnd(progress: ResearchProgress, observations: Array<{ citation_id: string; content: string }>, citations: Map<string, AgentCitation>) {
   let added = 0;
   for (const observation of observations) {
@@ -75,11 +126,29 @@ export const coverageSchema = z.object({ candidate_version: z.number().int().non
 }).strict()).max(20), recovery: z.object({ action: z.enum(['none', 'repair', 'research', 'clarify']),
   instruction: z.string().max(8000), question: text.optional() }).strict() }).strict();
 export type ResearchReview = z.infer<typeof coverageSchema> & { deliverable: boolean; completeness: 'complete' | 'partial' };
+/**
+ * 从不同类型的候选结果中提取待审阅正文。
+ *
+ * @param candidate 当前待处理的 Agent 候选结果。
+ * @param field 当前读取或校验的字段名。
+ * @param editId edit 对应的唯一标识（可选）。
+ * @returns 整理后的文本或标识；未找到或不可用时可能为空。
+ */
 export function candidateText(candidate: AgentResult, field: string, editId?: string): string | undefined {
   if (candidate.kind === 'document' && field === 'markdown') return candidate.markdown;
   if (candidate.kind === 'answer' && field === 'answer') return candidate.answer;
   if (candidate.kind === 'edits' && field === 'edit') return candidate.edits.find(e => e.id === editId)?.content_markdown;
 }
+/**
+ * 校验研究审阅输出及其修订要求。
+ *
+ * @param value 待校验或转换的值。
+ * @param brief 本次研究任务的目标与验收说明。
+ * @param candidate 当前待处理的 Agent 候选结果。
+ * @param version 本次操作对应的内容版本。
+ * @param evidenceIds evidence 对应的标识集合。
+ * @returns 研究覆盖情况、质量缺口与后续修订要求。
+ */
 export function validateResearchReview(value: unknown, brief: ResearchBrief, candidate: AgentResult, version: number, evidenceIds: string[]): ResearchReview {
   const report = coverageSchema.parse(value), known = new Set(evidenceIds);
   if (report.candidate_version !== version || report.items.length !== brief.questions.length ||
@@ -102,6 +171,14 @@ export function validateResearchReview(value: unknown, brief: ResearchBrief, can
 }
 
 export interface WebSourceSnapshot { content: string; hash: string; fetched_at: string; complete: boolean }
+/**
+ * 按查询关键词挑选相关来源片段，并保留原文位置。
+ *
+ * @param content 待处理的正文内容。
+ * @param query 用户问题或检索查询。
+ * @param maxChars maxChars 对应的数量或范围限制。
+ * @returns 整理后的结果列表。
+ */
 export function sourceExcerpts(content: string, query: string, maxChars = 5000): Array<{ start: number; end: number; text: string }> {
   const terms = query.toLocaleLowerCase().match(/[\p{L}\p{N}_-]+/gu) ?? [];
   // CJK queries are often an entire sentence; bigrams retain useful terms without a new tokenizer.

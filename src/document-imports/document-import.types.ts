@@ -1,3 +1,6 @@
+/**
+ * @file 导入数据协议。定义导入草稿、解析任务、状态和确认结果。
+ */
 import type { ImportStatus, Visibility } from '../common/types.js';
 import type { PublicDocumentAsset } from '../documents/assets/asset.types.js';
 

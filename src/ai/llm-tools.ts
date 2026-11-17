@@ -1,3 +1,6 @@
+/**
+ * @file 模型结构化工具。定义查询扩展和文档记忆提取所使用的工具名称与参数协议。
+ */
 import type { AgentToolCall } from '../common/types.js';
 
 export const LlmToolName = {
@@ -68,6 +71,12 @@ export const AGENT_TOOL_DEFINITIONS: LlmFunctionTool[] = (
 });
 
 export const createLlmTool = {
+  /**
+   * 定义查询扩展工具的参数结构，约束模型返回可用于检索的查询。
+   *
+   * @param maxVariants maxVariants 对应的数量或范围限制。
+   * @returns LlmFunctionTool 类型的处理结果。
+   */
   [LlmToolName.ExpandSearchQueries](maxVariants: number): LlmFunctionTool {
     return {
       type: 'function',
@@ -89,6 +98,12 @@ export const createLlmTool = {
     };
   },
 
+  /**
+   * 定义文档记忆记录工具的参数结构，约束提取项及其来源。
+   *
+   * @param hashes 用于匹配和去重的内容摘要集合。
+   * @returns LlmFunctionTool 类型的处理结果。
+   */
   [LlmToolName.RecordDocumentMemory](hashes: string[]): LlmFunctionTool {
     const confidence = { type: 'number', minimum: 0, maximum: 1 };
     const evidenceHashes = {

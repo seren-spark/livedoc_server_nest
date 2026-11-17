@@ -1,3 +1,6 @@
+/**
+ * @file 工作空间协议。定义分类、回收站、模板及工作空间归属信息。
+ */
 import type { DocumentRecord } from "../documents/document.types.js";
 export interface NoteCategory {
   category_id: string;

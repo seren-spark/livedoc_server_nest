@@ -1,3 +1,6 @@
+/**
+ * @file 会话约束表结构。声明会话约束快照和输入去重记录需要的数据库表。
+ */
 export const CONVERSATION_CONSTRAINTS_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS conversation_constraint_states (
     scope_key CHAR(64) PRIMARY KEY, user_id VARCHAR(128) NOT NULL,

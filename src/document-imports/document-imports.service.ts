@@ -1,3 +1,6 @@
+/**
+ * @file 文档导入流程。管理上传、解析草稿、租约、重试、确认建档和过期清理。
+ */
 import { ConversationConstraintsService } from '../ai/conversation-constraints.service.js';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
@@ -31,6 +34,19 @@ export class DocumentImportsService {
   private readonly jobStore: PersistentJobStore<ImportJobRecord>;
   private readonly repository: DocumentImportsRepository;
 
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param database 共享数据库服务。
+   * @param assets 当前文档关联的资源集合。
+   * @param documents 需要筛选或处理的文档集合。
+   * @param indexJobs IndexJobsService 依赖实例。
+   * @param memoryJobs DocumentMemoryJobsService 依赖实例。
+   * @param documentMemory DocumentMemoryService 依赖实例。
+   * @param blobs 已读取或创建的文件 Blob 集合。
+   * @param constraints ConversationConstraintsService 依赖实例（可选）。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly database: DatabaseService,
@@ -53,6 +69,12 @@ export class DocumentImportsService {
     });
   }
 
+  /**
+   * 校验上传内容后建立导入草稿并提交解析任务。
+   *
+   * @param input 当前用户、空间与团队身份，用于权限校验。
+   * @returns 文档导入记录。
+   */
   async createUpload(input: {
     data: Readable; filename: string; mime_type: string; title: string; visibility: Visibility;
     team_id: string | null; tags: string[]; folder: string | null; context: AccessContext;
@@ -104,6 +126,12 @@ export class DocumentImportsService {
     }
   }
 
+  /**
+   * 按标识读取文档导入记录。
+   *
+   * @param importId 文档导入记录标识。
+   * @returns 文档导入记录；未找到或不可用时可能为空。
+   */
   async get(importId: string): Promise<DocumentImportRecord | null> {
     let record: DocumentImportRecord | null;
     if (!this.database.importJobsEnabled) record = this.imports.get(importId) ?? null;
@@ -111,18 +139,37 @@ export class DocumentImportsService {
     return record ? this.withAssets(record) : null;
   }
 
+  /**
+   * 读取必需的文档导入记录，不存在时抛出错误。
+   *
+   * @param importId 文档导入记录标识。
+   * @returns 文档导入记录。
+   */
   async require(importId: string): Promise<DocumentImportRecord> {
     const record = await this.get(importId);
     if (!record) throw new NotFoundException('Document import not found.');
     return record;
   }
 
+  /**
+   * 确认资源或导入记录属于当前用户与空间。
+   *
+   * @param record 当前导入草稿记录。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   */
   assertOwner(record: DocumentImportRecord, context: AccessContext): void {
     if (record.space_id !== context.space_id || record.owner_id !== context.user_id) {
       throw new ForbiddenException('Document import access denied.');
     }
   }
 
+  /**
+   * 保存用户对导入解析结果所做的修改。
+   *
+   * @param importId 文档导入记录标识。
+   * @param request 当前业务请求。
+   * @returns 文档导入记录。
+   */
   async saveDraft(importId: string, request: DocumentImportDraftDto): Promise<DocumentImportRecord> {
     const record = await this.require(importId);
     if (!['review_ready', 'failed'].includes(record.status)) throw new ConflictException('Import is not ready for editor updates.');
@@ -133,6 +180,13 @@ export class DocumentImportsService {
     });
   }
 
+  /**
+   * 确认导入草稿，创建或关联正式文档并安排后续索引。
+   *
+   * @param importId 文档导入记录标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 知识文档记录列表。
+   */
   async confirm(importId: string, context: AccessContext): Promise<{
     document: DocumentRecord;
     assets: DocumentAssetRecord[];
@@ -289,6 +343,13 @@ export class DocumentImportsService {
     return this.confirmationResponse(document.doc_id, job.job_id);
   }
 
+  /**
+   * 整理导入确认后的文档与任务响应信息。
+   *
+   * @param docId 知识文档标识。
+   * @param jobId 后台任务标识。
+   * @returns 知识文档记录列表。
+   */
   private async confirmationResponse(docId: string, jobId: string): Promise<{
     document: DocumentRecord;
     assets: DocumentAssetRecord[];
@@ -300,6 +361,13 @@ export class DocumentImportsService {
     return { document, assets: await this.assets.list({ doc_id: docId }), job };
   }
 
+  /**
+   * 仅更新本次请求提供的文档导入记录字段。
+   *
+   * @param importId 文档导入记录标识。
+   * @param values 当前导入草稿记录。
+   * @returns 文档导入记录。
+   */
   async patch(importId: string, values: Partial<DocumentImportRecord>): Promise<DocumentImportRecord> {
     const current = await this.require(importId);
     const next = { ...current, ...values, assets: undefined, updated_at: new Date() };
@@ -309,6 +377,13 @@ export class DocumentImportsService {
     return this.withAssets(next);
   }
 
+  /**
+   * 检查当前状态后重新提交失败的任务。
+   *
+   * @param importId 文档导入记录标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns 文档导入记录。
+   */
   async retry(importId: string, context: AccessContext): Promise<DocumentImportRecord> {
     const current = await this.require(importId);
     if (!['failed', 'retry_wait', 'review_ready'].includes(current.status)) throw new ConflictException('Import cannot be retried.');
@@ -320,22 +395,51 @@ export class DocumentImportsService {
     return this.patch(importId, { status: 'queued', stage: '等待解析', progress: 5, error: null, latest_job_id: job.job_id });
   }
 
+  /**
+   * 领取下一条可执行任务，并取得对应执行代次与租约。
+   *
+   * @param workerId 当前执行 Worker 的标识。
+   * @returns ImportJobRecord 类型的处理结果；未找到或不可用时可能为空。
+   */
   async claimNext(workerId: string): Promise<ImportJobRecord | null> {
     const claimed = await this.jobStore.claimNext(workerId);
     if (claimed) await this.patch(claimed.import_id, { status: 'parsing', progress: 15, stage: '解析文档结构', error: null });
     return claimed;
   }
 
+  /**
+   * 续期当前 Worker 的任务租约。
+   *
+   * @param job 当前导入解析任务。
+   * @returns 条件是否满足的判断结果。
+   */
   async heartbeat(job: ImportJobRecord): Promise<boolean> {
     return this.jobStore.heartbeat(job.job_id, job.worker_id ?? '', job.generation);
   }
 
+  /**
+   * 检查当前 Worker 与执行代次是否仍持有任务租约。
+   *
+   * @param job 当前导入解析任务。
+   * @returns 条件是否满足的判断结果。
+   */
   async ownsLease(job: ImportJobRecord): Promise<boolean> {
     return this.jobStore.ownsLease(job.job_id, job.worker_id, job.generation);
   }
 
+  /**
+   * 将当前执行任务标记为成功，并保存结果状态。
+   *
+   * @param job 当前导入解析任务。
+   */
   async succeed(job: ImportJobRecord): Promise<void> { await this.finishJob(job, 'succeeded', null); }
 
+  /**
+   * 记录任务失败原因，并根据剩余次数安排重试或结束。
+   *
+   * @param job 当前导入解析任务。
+   * @param error 本次操作捕获的异常。
+   */
   async fail(job: ImportJobRecord, error: string): Promise<void> {
     const terminal = job.attempts >= job.max_attempts;
     const status = terminal ? 'failed' : 'retry_wait';
@@ -345,6 +449,11 @@ export class DocumentImportsService {
     await this.patch(job.import_id, { status, stage: terminal ? '解析失败' : '等待重试', error: error.slice(0, 2000) });
   }
 
+  /**
+   * 检查当前状态后移除指定文档导入记录。
+   *
+   * @param importId 文档导入记录标识。
+   */
   async remove(importId: string): Promise<void> {
     const current = await this.require(importId);
     if (['uploaded', 'queued', 'parsing', 'retry_wait'].includes(current.status)) {
@@ -371,6 +480,11 @@ export class DocumentImportsService {
     });
   }
 
+  /**
+   * 删除超过保留期限的导入记录及相关资源。
+   *
+   * @returns 计算得到的数值。
+   */
   async cleanupExpired(): Promise<number> {
     const cutoff = new Date(Date.now() - this.config.importRetentionDays * 86400_000);
     const ids = !this.database.importJobsEnabled
@@ -380,6 +494,12 @@ export class DocumentImportsService {
     return ids.length;
   }
 
+  /**
+   * 为已确认或更新的文档安排长期记忆提取任务。
+   *
+   * @param document 当前知识文档记录。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   */
   private async queueDocumentMemory(document: DocumentRecord, context: AccessContext): Promise<void> {
     if (!this.config.documentMemoryEnabled || !document.content.trim()) return;
     try {
@@ -393,10 +513,25 @@ export class DocumentImportsService {
     }
   }
 
+  /**
+   * 为业务记录补充已关联的图片资源信息。
+   *
+   * @param record 当前导入草稿记录。
+   * @returns 文档导入记录。
+   */
   private async withAssets(record: DocumentImportRecord): Promise<DocumentImportRecord> {
     return { ...record, assets: (await this.assets.list({ import_id: record.import_id })).map(publicAsset) };
   }
 
+  /**
+   * 根据当前导入版本构造一条新的解析任务。
+   *
+   * @param importId 文档导入记录标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @param now 本次操作采用的时间基准。
+   * @returns ImportJobRecord 类型的处理结果。
+   */
   private makeJob(importId: string, context: AccessContext, generation: number, now: Date): ImportJobRecord {
     return { job_id: randomUUID().replaceAll('-',''), import_id: importId, status: 'queued', attempts: 0,
       max_attempts: this.config.importJobMaxAttempts, generation, requested_by: context.user_id,
@@ -405,11 +540,25 @@ export class DocumentImportsService {
       error: null, created_at: now, started_at: null, finished_at: null, updated_at: now };
   }
 
+  /**
+   * 根据已有任务记录计算下一次执行代次。
+   *
+   * @param importId 文档导入记录标识。
+   * @returns 计算得到的数值。
+   */
   private async nextGeneration(importId: string): Promise<number> {
     if (!this.database.importJobsEnabled) return Math.max(0, ...[...this.jobs.values()].filter((job)=>job.import_id===importId).map((job)=>job.generation)) + 1;
     return this.repository.nextGeneration(importId);
   }
 
+  /**
+   * 校验执行代次后完成任务状态写回。
+   *
+   * @param job 当前导入解析任务。
+   * @param status 当前导入解析任务。
+   * @param error 本次操作捕获的异常。
+   * @param nextRunAt nextRunAt 参数。
+   */
   private async finishJob(job: ImportJobRecord, status: ImportJobRecord['status'], error: string | null, nextRunAt = job.next_run_at): Promise<void> {
     await this.jobStore.finish(job.job_id, status, {
       error,
@@ -420,6 +569,13 @@ export class DocumentImportsService {
   }
 }
 
+/**
+ * 合并正文与图片说明，构造实际用于知识检索的索引文本。
+ *
+ * @param content 待处理的正文内容。
+ * @param assets 当前文档关联的资源集合。
+ * @returns 整理后的文本或标识。
+ */
 export function buildIndexContent(content: string, assets: DocumentAssetRecord[]): string {
   const sections = assets
     .filter((asset) => asset.kind !== 'source' && (asset.ocr_text || asset.description))
@@ -436,6 +592,12 @@ export function buildIndexContent(content: string, assets: DocumentAssetRecord[]
     : content;
 }
 
+/**
+ * 清理上传文件名中的路径与非法字符。
+ *
+ * @param filename 上传文件的原始名称。
+ * @returns 整理后的文本或标识。
+ */
 export function safeFilename(filename: string): string {
   const safe = filename.split(/[\\/]/u).at(-1)?.trim().replace(/[^\p{L}\p{N} ._()-]/gu, '_').slice(0,512);
   if (!safe || safe === '.' || safe === '..') throw new BadRequestException('Invalid filename.');

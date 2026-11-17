@@ -1,3 +1,6 @@
+/**
+ * @file 索引任务队列。管理任务入队、租约续期、成功、失败、失效和重试。
+ */
 import { Injectable } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { AppConfig } from "../config/app-config.js";
@@ -17,6 +20,12 @@ export class IndexJobsService {
   private readonly store: PersistentJobStore<IndexJobRecord>;
   private readonly repository: IndexJobsRepository;
 
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param database 共享数据库服务。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly database: DatabaseService,
@@ -33,6 +42,15 @@ export class IndexJobsService {
     });
   }
 
+  /**
+   * 对索引任务做重复检查后提交后台任务。
+   *
+   * @param request 当前业务请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param _force 回调签名保留的参数，当前实现不使用。
+   * @param manager 当前数据库事务执行器（可选）。
+   * @returns 索引任务记录。
+   */
   async enqueue(
     request: DocumentIndexRequest, // 要索引的文档快照（doc_id + document_version + 正文等）
     context: AccessContext, // 当前用户上下文（user_id / space_id / team_ids）
@@ -83,6 +101,12 @@ export class IndexJobsService {
     return job;
   }
 
+  /**
+   * 按标识读取索引任务。
+   *
+   * @param jobId 后台任务标识。
+   * @returns 索引任务记录；未找到或不可用时可能为空。
+   */
   async get(jobId: string): Promise<IndexJobRecord | null> {
     return this.store.get(jobId);
   }
@@ -91,28 +115,71 @@ export class IndexJobsService {
    * 领取下一个任务
    * @param workerId 工作线程 ID
    * @returns 被领取的任务记录，或 null 表示没有任务可领取
+   *
+   * @param targetJobId targetJob 对应的唯一标识（可选）。
    */
   async claimNext(workerId: string, targetJobId?: string): Promise<IndexJobRecord | null> {
     // PersistentJobStore still claims MySQL jobs in a transaction with FOR UPDATE SKIP LOCKED.
     return this.store.claimNext(workerId, targetJobId);
   }
 
+  /**
+   * 续期当前 Worker 的任务租约。
+   *
+   * @param jobId 后台任务标识。
+   * @param workerId 当前执行 Worker 的标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @returns 条件是否满足的判断结果。
+   */
   async heartbeat(jobId: string, workerId: string, generation: number): Promise<boolean> {
     return this.store.heartbeat(jobId, workerId, generation);
   }
 
+  /**
+   * 检查当前 Worker 与执行代次是否仍持有任务租约。
+   *
+   * @param jobId 后台任务标识。
+   * @param workerId 当前执行 Worker 的标识。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入。
+   * @returns 条件是否满足的判断结果。
+   */
   async ownsLease(jobId: string, workerId: string, generation: number): Promise<boolean> {
     return this.store.ownsLease(jobId, workerId, generation);
   }
 
+  /**
+   * 将当前执行任务标记为成功，并保存结果状态。
+   *
+   * @param jobId 后台任务标识。
+   * @param workerId 当前执行 Worker 的标识（可选）。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入（可选）。
+   * @returns 索引任务记录。
+   */
   async succeed(jobId: string, workerId?: string, generation?: number): Promise<IndexJobRecord> {
     return this.finish(jobId, "succeeded", null, workerId, generation);
   }
 
+  /**
+   * 将已被新版本替代的任务标记为失效。
+   *
+   * @param jobId 后台任务标识。
+   * @param workerId 当前执行 Worker 的标识（可选）。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入（可选）。
+   * @returns 索引任务记录。
+   */
   async supersede(jobId: string, workerId?: string, generation?: number): Promise<IndexJobRecord> {
     return this.finish(jobId, "superseded", null, workerId, generation);
   }
 
+  /**
+   * 记录任务失败原因，并根据剩余次数安排重试或结束。
+   *
+   * @param jobId 后台任务标识。
+   * @param error 本次操作捕获的异常。
+   * @param workerId 当前执行 Worker 的标识（可选）。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入（可选）。
+   * @returns 索引任务记录。
+   */
   async fail(jobId: string, error: string, workerId?: string, generation?: number): Promise<IndexJobRecord> {
     const job = await this.require(jobId);
     if (workerId && (job.worker_id !== workerId || job.generation !== generation)) return job;
@@ -125,6 +192,11 @@ export class IndexJobsService {
     return this.finish(jobId, "failed", error, workerId, generation);
   }
 
+  /**
+   * 取消指定文档尚未结束的后台任务。
+   *
+   * @param docId 知识文档标识。
+   */
   async cancelDocument(docId: string): Promise<void> {
     await this.store.cancelWhere({
       whereSql: "doc_id=?",
@@ -134,26 +206,59 @@ export class IndexJobsService {
     });
   }
 
+  /**
+   * 统计当前范围内尚未结束的任务数量。
+   *
+   * @param spaceId space 对应的唯一标识。
+   * @returns 计算得到的数值。
+   */
   async activeCount(spaceId: string): Promise<number> {
     return this.store.activeCountBySpace(spaceId);
   }
+  /**
+   * 删除指定文档对应的数据及关联记录。
+   *
+   * @param docId 知识文档标识。
+   */
   async deleteDocument(docId:string):Promise<void> {
     await this.store.deleteWhere({whereSql:'doc_id=?',params:[docId],predicate:job=>job.doc_id===docId});
   }
 
   // 获取文档所有索引任务（包括已完成）
+  /**
+   * 获取文档所有索引任务（包括已完成）
+   *
+   * @param docId 知识文档标识。
+   * @returns 索引任务记录列表。
+   */
   private async forDocument(docId: string): Promise<IndexJobRecord[]> {
     if (!this.database.indexJobsEnabled)
       return [...this.jobs.values()].filter((item) => item.doc_id === docId);
     return this.repository.listByDocument(docId);
   }
 
+  /**
+   * 读取必需的索引任务，不存在时抛出错误。
+   *
+   * @param jobId 后台任务标识。
+   * @returns 索引任务记录。
+   */
   private async require(jobId: string): Promise<IndexJobRecord> {
     const job = await this.get(jobId);
     if (!job) throw new Error(`Index job not found: ${jobId}`);
     return job;
   }
 
+  /**
+   * 检查当前状态后重新提交失败的任务。
+   *
+   * @param jobId 后台任务标识。
+   * @param error 本次操作捕获的异常。
+   * @param nextRunAt nextRunAt 参数（Date）。
+   * @param workerId 当前执行 Worker 的标识（可选）。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入（可选）。
+   * @returns 索引任务记录。
+   */
   private async retry(
     jobId: string,
     error: string,
@@ -170,6 +275,16 @@ export class IndexJobsService {
     return job ?? this.require(jobId);
   }
 
+  /**
+   * 通过共享任务存储更新索引终态，若租约已变则读取当前任务状态。
+   *
+   * @param jobId 后台任务标识。
+   * @param status 本次需要记录或切换到的状态。
+   * @param error 本次操作捕获的异常。
+   * @param workerId 当前执行 Worker 的标识（可选）。
+   * @param generation 任务执行代次，用于阻止旧 Worker 写入（可选）。
+   * @returns 索引任务记录。
+   */
   private async finish(
     jobId: string,
     status: IndexJobStatus,

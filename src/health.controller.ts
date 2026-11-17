@@ -1,11 +1,24 @@
+/**
+ * @file 服务健康接口。区分进程存活与依赖就绪状态，供启动检查和监控使用。
+ */
 import { Controller, Get } from '@nestjs/common';
 import { Public } from './auth/public.decorator.js';
 import { AppConfig } from './config/app-config.js';
 
 @Controller()
 export class HealthController {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   */
   constructor(private readonly config: AppConfig) {}
 
+  /**
+   * 返回服务整体健康状态及依赖概况。
+   *
+   * @returns 整理后的状态与操作结果对象。
+   */
   @Public()
   @Get('health')
   health() {
@@ -50,12 +63,22 @@ export class HealthController {
     };
   }
 
+  /**
+   * 检查当前 API 进程是否仍在运行。
+   *
+   * @returns 整理后的状态与操作结果对象。
+   */
   @Public()
   @Get('health/live')
   live() {
     return { status: 'ok' };
   }
 
+  /**
+   * 检查必要依赖是否已准备好接收业务请求。
+   *
+   * @returns 整理后的状态与操作结果对象。
+   */
   @Public()
   @Get('health/ready')
   ready() {

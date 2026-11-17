@@ -1,3 +1,6 @@
+/**
+ * @file RAG 检索主链路。编排分块入库、查询变体、混合召回、权限过滤、重排和证据压缩。
+ */
 import { selectEvidence } from './evidence-selection.js';
 import { prepareEmbeddingChunks } from './embedding-chunks.js';
 import { Injectable, Optional } from "@nestjs/common";
@@ -30,6 +33,19 @@ type ExpansionSource = RetrievalTrace["expansion_source"];
 
 @Injectable()
 export class RetrievalService {
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param config 应用运行配置。
+   * @param embeddings EmbeddingService 依赖实例。
+   * @param sparse SparseEmbeddingService 依赖实例。
+   * @param store VectorStoreService 依赖实例。
+   * @param reranker RerankerService 依赖实例。
+   * @param compressor ContextCompressorService 依赖实例。
+   * @param observability ObservabilityService 依赖实例。
+   * @param articleDrafts ArticleRepository 依赖实例（可选）。
+   * @param catalog 当前可用文档、技能或来源目录（可选）。
+   */
   constructor(
     private readonly config: AppConfig,
     private readonly embeddings: EmbeddingService,
@@ -42,6 +58,13 @@ export class RetrievalService {
     @Optional() private readonly catalog?: DocumentCatalog,
   ) {}
 
+  /**
+   * 结构化分块并生成稠密、稀疏向量，写入指定版本的文档索引。
+   *
+   * @param document 当前知识文档记录。
+   * @param activate 写入后是否立即激活该版本的索引。
+   * @returns 成功生成并写入的分块数量。
+   */
   async indexDocument(
     document: DocumentIndexRequest,
     activate = true,
@@ -86,12 +109,33 @@ export class RetrievalService {
       async hits => this.catalog ? this.catalog.readableHits(hits, context) : hits);
   }
 
-  /** Internal derived-knowledge entry: provenance is checked before reranking or compression. */
+  /**
+   * 对衍生知识执行检索，在重排和压缩前核验其来源权限。
+   *
+   *  Internal derived-knowledge entry: provenance is checked before reranking or compression.
+   *
+   * @param request 包含查询文本、检索范围与返回数量的请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param authorize 向量库或关键词召回得到的候选命中。
+   * @returns 引用证据与本次检索追踪。
+   */
   async searchWikiWithTrace(request: SearchDto, context: AccessContext,
     authorize: (hits: SearchHit[]) => Promise<SearchHit[]>) {
     return this.searchAuthorizedWithTrace(request, context, undefined, "original", 0, authorize, true);
   }
 
+  /**
+   * 执行混合召回，在重排和压缩前校验候选权限，并记录完整检索链路。
+   *
+   * @param request 包含查询文本、检索范围与返回数量的请求。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param queryVariants 围绕原问题生成的检索查询变体。
+   * @param expansionSource 查询变体来自原文、模型扩展或回退的标记。
+   * @param preprocessingMs 查询预处理耗时，单位为毫秒。
+   * @param authorize 向量库或关键词召回得到的候选命中。
+   * @param wikiOnly wikiOnly 参数。
+   * @returns 经过权限检查、重排和压缩的引用证据与检索追踪。
+   */
   private async searchAuthorizedWithTrace(request: SearchDto, context: AccessContext,
     queryVariants: string[] | undefined, expansionSource: ExpansionSource, preprocessingMs: number,
     authorize: (hits: SearchHit[]) => Promise<SearchHit[]>, wikiOnly = false): Promise<{ citations: Citation[]; trace: RetrievalTrace; retrieval_debug?: RetrievalDebug }> {
@@ -179,6 +223,12 @@ export class RetrievalService {
     return { citations, trace };
   }
 
+  /**
+   * 在当前文档范围内检索证据，并返回可观测的检索信息。
+   *
+   * @param options 当前用户、空间与团队身份，用于权限校验。
+   * @returns 引用证据与本次检索追踪。
+   */
   async searchCurrentDocumentWithTrace(options: {
     query: string;
     title: string;
@@ -329,6 +379,8 @@ export class RetrievalService {
    * @param context 上下文
    * @param preparedQueryVariants 多个查询变体（原始查询 + 改写/扩展的查询）
    * @returns 合并后的召回结果
+   *
+   * @param wikiOnly wikiOnly 参数。
    */
   private async retrieveMultiQuery(
     request: SearchDto,
@@ -382,10 +434,10 @@ export class RetrievalService {
   }
   /**
    * 确保切出来的 chunks 在真实 tokenizer 下不超过预算
-   * @param docId
-   * @param title
-   * @param content
-   * @returns
+   * @param docId 知识文档标识。
+   * @param title 文档或界面标题。
+   * @param content 待处理的正文内容。
+   * @returns 用于向量化的文档分块及其完整输入文本。
    */
   private async prepareChunksForEmbedding(
     docId: string,
@@ -472,6 +524,12 @@ export function rrfFuseMany(
     .sort((a, b) => b.score - a.score);
 }
 
+/**
+ * 合并多个召回排名并去重，保留各来源提供的候选。
+ *
+ * @param rankings 向量库或关键词召回得到的候选命中。
+ * @returns 检索候选命中列表。
+ */
 export function mergeRankingsUnique(rankings: SearchHit[][]): SearchHit[] {
   const byChunk = new Map<string, SearchHit>();
   for (const hits of rankings) {
@@ -523,6 +581,13 @@ export function dedupeHits(hits: SearchHit[]): SearchHit[] {
   return result;
 }
 
+/**
+ * 把索引命中转换为带原文位置和来源元数据的引用。
+ *
+ * @param index 当前条目或块的序号。
+ * @param hit 向量库或关键词召回得到的候选命中。
+ * @returns 引用证据。
+ */
 function hitToCitation(index: number, hit: SearchHit): Citation {
   const payload = hit.payload;
   return {
@@ -559,6 +624,17 @@ function hitToCitation(index: number, hit: SearchHit): Citation {
   };
 }
 
+/**
+ * 构造无候选或提前结束时使用的初始检索追踪。
+ *
+ * @param traceId 检索追踪标识。
+ * @param rewrittenQuery 用于召回或记录追踪的改写查询。
+ * @param preparedQueryVariants 已规范化并去重的查询变体。
+ * @param expansionSource 查询变体来自原文、模型扩展或回退的标记。
+ * @param preprocessingMs 查询预处理耗时，单位为毫秒。
+ * @param totalStarted 整个处理流程的起始计时点（可选）。
+ * @returns 检索链路追踪。
+ */
 function emptyTrace(
   traceId: string,
   rewrittenQuery: string,

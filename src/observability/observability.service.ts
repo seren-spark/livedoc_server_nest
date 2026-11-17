@@ -1,3 +1,6 @@
+/**
+ * @file 检索链路观测。记录检索和生成阶段，按用户范围汇总耗时、命中与采纳情况。
+ */
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type {
@@ -20,6 +23,12 @@ export class ObservabilityService {
   private readonly feedback: FeedbackRecord[] = [];
   private readonly repository: ObservabilityRepository;
 
+  /**
+   * 初始化实例依赖与本地状态。
+   *
+   * @param database 共享数据库服务。
+   * @param config 应用运行配置。
+   */
   constructor(
     private readonly database: DatabaseService,
     private readonly config: AppConfig,
@@ -27,6 +36,15 @@ export class ObservabilityService {
     this.repository = new ObservabilityRepository(database);
   }
 
+  /**
+   * 记录本次检索的参数、候选、耗时和证据结果。
+   *
+   * @param trace 当前检索或运行追踪。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param query 用户问题或检索查询。
+   * @param citations 包含来源、原文位置与内容的检索引用。
+   * @param entrypoint entrypoint 参数。
+   */
   async recordSearch(
     trace: RetrievalTrace,
     context: AccessContext | null,
@@ -70,6 +88,15 @@ export class ObservabilityService {
     } else this.traces.set(trace.trace_id, record);
   }
 
+  /**
+   * 补充检索对应的生成结果与完成状态。
+   *
+   * @param traceId 检索追踪标识。
+   * @param toolName 当前工具的名称。
+   * @param hasEvidence 当前结果是否具有可使用的引用依据。
+   * @param generationMs 模型生成耗时，单位为毫秒。
+   * @param error 本次操作捕获的异常。
+   */
   async recordCompletion(
     traceId: string,
     toolName: string,
@@ -94,6 +121,15 @@ export class ObservabilityService {
     });
   }
 
+  /**
+   * 保存本次任务的用户反馈，并更新相关效果记录。
+   *
+   * @param traceId 检索追踪标识。
+   * @param action 本次请求执行的操作类型。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param comment 用户提交的评论或反馈说明。
+   * @returns 条件是否满足的判断结果。
+   */
   async recordFeedback(
     traceId: string,
     action: FeedbackAction,
@@ -127,6 +163,14 @@ export class ObservabilityService {
     return true;
   }
 
+  /**
+   * 按用户和时间窗口汇总检索耗时、证据使用与采纳指标。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param window 统计时间窗口。
+   * @param queueDepth 当前等待执行的任务数量。
+   * @returns 时间对象。
+   */
   async snapshot(context: AccessContext, window: string, queueDepth: number) {
     const hours = windowHours(window);
     const from = new Date(Date.now() - hours * 60 * 60 * 1000);
@@ -157,6 +201,14 @@ export class ObservabilityService {
     };
   }
 
+  /**
+   * 按权限与时间范围读取检索追踪列表。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param window 统计时间窗口。
+   * @param limit 本次读取或处理的数量上限。
+   * @returns 当前页条目与符合条件的总数；未找到或不可用时可能为空。
+   */
   async listTraces(context: AccessContext, window: string, limit: number) {
     const from = new Date(Date.now() - windowHours(window) * 60 * 60 * 1000);
     const items = (await this.scopedTraces(context, from, true)).sort((a, b) => b.created_at.getTime() - a.created_at.getTime());
@@ -166,6 +218,13 @@ export class ObservabilityService {
     };
   }
 
+  /**
+   * 读取当前身份允许查看的单条检索追踪。
+   *
+   * @param traceId 检索追踪标识。
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @returns Record<string, unknown> 类型的处理结果；未找到或不可用时可能为空。
+   */
   async getTrace(traceId: string, context: AccessContext): Promise<Record<string, unknown> | null> {
     if (this.database.observabilityEnabled) {
       const trace = await this.repository.findScoped(traceId, context.user_id, context.space_id);
@@ -177,6 +236,14 @@ export class ObservabilityService {
       : null;
   }
 
+  /**
+   * 筛选属于当前用户、空间和统计窗口的追踪。
+   *
+   * @param context 当前用户、空间与团队身份，用于权限校验。
+   * @param from 编辑区间的起始位置。
+   * @param userScoped 是否只保留当前用户作用范围内的数据。
+   * @returns 整理后的结果列表。
+   */
   private async scopedTraces(context: AccessContext, from: Date, userScoped = false): Promise<TraceRecord[]> {
     if (!this.database.observabilityEnabled) {
       return [...this.traces.values()].filter(
@@ -194,6 +261,12 @@ export class ObservabilityService {
   }
 }
 
+/**
+ * 将查询窗口转换为允许范围内的小时数。
+ *
+ * @param window 统计时间窗口。
+ * @returns 计算得到的数值。
+ */
 export function windowHours(window: string): number {
   const allowed: Record<string, number> = { '24h': 24, '7d': 168, '30d': 720 };
   const value = allowed[window];
@@ -201,10 +274,24 @@ export function windowHours(window: string): number {
   return value;
 }
 
+/**
+ * 计算指标比例，并处理分母为零的情况。
+ *
+ * @param numerator 比例计算的分子。
+ * @param denominator 比例计算的分母。
+ * @returns 计算得到的数值。
+ */
 function ratio(numerator: number, denominator: number): number {
   return denominator ? Math.round((numerator / denominator) * 10_000) / 10_000 : 0;
 }
 
+/**
+ * 从样本分布中计算指定分位数。
+ *
+ * @param values 待转换或去重的值集合。
+ * @param quantile 需要计算的分位比例。
+ * @returns 计算得到的数值。
+ */
 function percentile(values: number[], quantile: number): number {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -215,6 +302,12 @@ function percentile(values: number[], quantile: number): number {
   return Math.round((sorted[Math.min(sorted.length - 1, index)] ?? 0) * 100) / 100;
 }
 
+/**
+ * 裁剪完整追踪，生成适合列表展示的摘要。
+ *
+ * @param item 本次正在处理的条目。
+ * @returns 时间对象；未找到或不可用时可能为空。
+ */
 function traceSummary(item: TraceRecord) {
   return {
     trace_id: item.trace_id,
@@ -233,6 +326,12 @@ function traceSummary(item: TraceRecord) {
   };
 }
 
+/**
+ * 将追踪中的结构化字段转换为可持久化形式。
+ *
+ * @param item 本次正在处理的条目。
+ * @returns Record<string, unknown> 类型的处理结果。
+ */
 function serializeTrace(item: TraceRecord): Record<string, unknown> {
   return {
     trace_id: item.trace_id,

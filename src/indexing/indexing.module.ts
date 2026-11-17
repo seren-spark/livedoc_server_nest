@@ -1,3 +1,6 @@
+/**
+ * @file 索引模块。注册索引队列和 Worker，连接文档、向量库与资源服务。
+ */
 import { forwardRef, Module } from '@nestjs/common';
 import { DocumentsModule } from '../documents/documents.module.js';
 import { RetrievalModule } from '../retrieval/retrieval.module.js';
